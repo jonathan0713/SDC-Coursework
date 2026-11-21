@@ -1,0 +1,21 @@
+[project]
+name = "3dgs-new"
+version = "0.1.0"
+description = "3DGS environment"
+requires-python = ">=3.11, <3.12"
+dependencies = [
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "gsplat",
+    "opencv-python",
+    "open3d",
+    "scipy",
+    "tensorboard",
+    "numpy",
+    "tqdm",
+    "transformers",
+    "timm",
+    "pillow",
+    "xformers"
+]

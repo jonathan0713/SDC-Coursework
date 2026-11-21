@@ -1,0 +1,243 @@
+/* doc.css */
+/* Claude-like warm document style for AI-generated HTML docs */
+
+:root {
+    --bg: #f7f3ee;
+    --surface: #fffaf3;
+    --surface-2: #f1ebe3;
+    --text: #2b2926;
+    --muted: #6f6a63;
+    --faint: #9a9288;
+    --border: #ded4c8;
+    --accent: #9a4f2f;
+    --accent-soft: #ead8cd;
+    --code-bg: #eee7dc;
+    --shadow: 0 18px 50px rgba(43, 41, 38, 0.08);
+
+    --font-body:
+    ui-serif, Georgia, Cambria, "Times New Roman",
+    "Noto Serif TC", "Noto Serif CJK TC", serif;
+
+    --font-sans:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", "Noto Sans TC", "Noto Sans CJK TC", sans-serif;
+
+    --font-mono:
+    "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono",
+    Menlo, monospace;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    background: var(--bg);
+    color: var(--text);
+    font-size: 17px;
+    line-height: 1.72;
+}
+
+body {
+    margin: 0;
+    padding: 48px 20px 72px;
+    font-family: var(--font-body);
+}
+
+main,
+.doc-shell {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 56px 64px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 28px;
+    box-shadow: var(--shadow);
+}
+
+@media (max-width: 720px) {
+    body {
+        padding: 20px 12px 48px;
+    }
+
+    main,
+    .doc-shell {
+        padding: 32px 22px;
+        border-radius: 20px;
+    }
+}
+
+h1,
+h2,
+h3,
+h4 {
+    font-family: var(--font-sans);
+    line-height: 1.2;
+    letter-spacing: -0.03em;
+    color: var(--text);
+}
+
+h1 {
+    margin: 0 0 24px;
+    font-size: clamp(2.2rem, 5vw, 4.2rem);
+    font-weight: 650;
+}
+
+h2 {
+    margin: 56px 0 18px;
+    font-size: 1.75rem;
+    font-weight: 650;
+}
+
+h3 {
+    margin: 36px 0 12px;
+    font-size: 1.25rem;
+    font-weight: 650;
+}
+
+p {
+    margin: 0 0 1.05em;
+}
+
+.lead {
+    font-family: var(--font-sans);
+    font-size: 1.15rem;
+    line-height: 1.7;
+    color: var(--muted);
+}
+
+.eyebrow {
+    display: inline-block;
+    margin-bottom: 18px;
+    font-family: var(--font-sans);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+
+a {
+    color: var(--accent);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+}
+
+a:hover {
+    color: #6f351f;
+}
+
+hr {
+    margin: 48px 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+}
+
+blockquote {
+    margin: 28px 0;
+    padding: 18px 22px;
+    color: var(--muted);
+    background: var(--surface-2);
+    border-left: 4px solid var(--accent);
+    border-radius: 16px;
+}
+
+.callout {
+    margin: 28px 0;
+    padding: 20px 22px;
+    background: var(--accent-soft);
+    border: 1px solid #dfc3b2;
+    border-radius: 18px;
+    font-family: var(--font-sans);
+    color: #3d2f29;
+}
+
+.card {
+    margin: 28px 0;
+    padding: 24px;
+    background: #fffdf8;
+    border: 1px solid var(--border);
+    border-radius: 22px;
+}
+
+ul,
+ol {
+    padding-left: 1.4em;
+}
+
+li {
+    margin: 0.35em 0;
+}
+
+table {
+    width: 100%;
+    margin: 28px 0;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-family: var(--font-sans);
+    font-size: 0.94rem;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+}
+
+th,
+td {
+    padding: 12px 14px;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border);
+}
+
+th {
+    text-align: left;
+    background: var(--surface-2);
+    font-weight: 650;
+}
+
+tr:last-child td {
+    border-bottom: 0;
+}
+
+code {
+    padding: 0.16em 0.35em;
+    background: var(--code-bg);
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+}
+
+pre {
+    margin: 28px 0;
+    padding: 20px;
+    overflow-x: auto;
+    background: #27231f;
+    color: #f8efe3;
+    border-radius: 18px;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    line-height: 1.65;
+}
+
+pre code {
+    padding: 0;
+    background: transparent;
+    color: inherit;
+}
+
+.figcaption,
+figcaption {
+    margin-top: 8px;
+    font-family: var(--font-sans);
+    font-size: 0.88rem;
+    color: var(--muted);
+}
+
+.kbd {
+    padding: 0.14em 0.42em;
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 6px;
+    background: #fffdf8;
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+}

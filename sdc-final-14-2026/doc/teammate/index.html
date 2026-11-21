@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>隊友追蹤方法說明 — Competition 1</title>
+  <link rel="stylesheet" href="../architecture/doc.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+          onload="renderMathInElement(document.body, {
+            delimiters: [
+              {left: '\\[', right: '\\]', display: true},
+              {left: '\\(', right: '\\)', display: false}
+            ]
+          })"></script>
+  <style>
+    .pipeline-figure {
+      margin: 32px 0;
+      overflow-x: auto;
+    }
+    .pipeline-figure svg {
+      display: block;
+      max-width: 100%;
+      height: auto;
+    }
+    .math {
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+      background: var(--code-bg);
+      border-radius: 5px;
+      padding: 0.12em 0.3em;
+    }
+    table td:nth-child(n+2) {
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 0.88em;
+    }
+  </style>
+</head>
+<body>
+  <main class="doc-shell">
+    <div class="eyebrow">SDC Final · 技術筆記</div>
+    <h1>隊友追蹤方法說明</h1>
+    <p class="lead">
+      本文說明隊友針對 <strong>Competition 1（靜態自車 4D Radar MOT）</strong> 實作的追蹤方案。
+      核心為等速 Kalman Filter（KF）＋ 融合距離、Range Rate、RCS 的 Hungarian 配對，
+      並以 <strong>Graveyard Re-ID</strong> 機制回收已刪除 Track 的 ID，降低 ID-Switch。
+      程式碼位於 <code>cite/teammate/competition_1_static_mot_student/starter_code/</code>。
+    </p>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>整體流程</h2>
+
+    <figure class="pipeline-figure">
+      <svg viewBox="0 0 560 580" xmlns="http://www.w3.org/2000/svg"
+           font-family="Inter, ui-sans-serif, system-ui, sans-serif">
+        <defs>
+          <marker id="arr" markerWidth="9" markerHeight="7"
+                  refX="8" refY="3.5" orient="auto">
+            <polygon points="0 0, 9 3.5, 0 7" fill="#9a9288"/>
+          </marker>
+        </defs>
+
+        <!-- Input -->
+        <rect x="80" y="10" width="400" height="44" rx="10"
+              fill="#ddeedd" stroke="#9abf9a" stroke-width="1.5"/>
+        <text x="280" y="29" text-anchor="middle"
+              font-weight="700" font-size="13" fill="#2b4a2b">雷達點雲 + 聚類遮罩</text>
+        <text x="280" y="46" text-anchor="middle"
+              font-size="11" fill="#4a7a4a">(N × 5)  [x, y, z, range_rate, rcs]  ·  mask_cluster</text>
+
+        <!-- arrow -->
+        <line x1="280" y1="54" x2="280" y2="72" stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Step 1: Separate -->
+        <rect x="80" y="72" width="400" height="48" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="280" y="93" text-anchor="middle"
+              font-weight="700" font-size="12" fill="#9a4f2f">separate_static_and_moving()</text>
+        <text x="280" y="112" text-anchor="middle"
+              font-size="11" fill="#6f6a63">依 mask 值分離靜態（-1）與動態（≥0）點</text>
+
+        <line x1="280" y1="120" x2="280" y2="138" stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Step 2: Cluster centroids -->
+        <rect x="80" y="138" width="400" height="48" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="280" y="159" text-anchor="middle"
+              font-weight="700" font-size="12" fill="#9a4f2f">calculate_cluster_centroids()</text>
+        <text x="280" y="178" text-anchor="middle"
+              font-size="11" fill="#6f6a63">對每個 cluster_id 計算 mean [x, y, z]、mean range_rate、mean RCS</text>
+
+        <line x1="280" y1="186" x2="280" y2="204" stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Step 3: Build detections -->
+        <rect x="80" y="204" width="400" height="48" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="280" y="225" text-anchor="middle"
+              font-weight="700" font-size="12" fill="#9a4f2f">build_detections()</text>
+        <text x="280" y="244" text-anchor="middle"
+              font-size="11" fill="#6f6a63">detections  (M × 6)  [x, y, z, cluster_id, range_rate, rcs]</text>
+
+        <line x1="280" y1="252" x2="280" y2="270" stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Tracker box (tall) -->
+        <rect x="80" y="270" width="400" height="174" rx="10"
+              fill="#f4f0eb" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="280" y="292" text-anchor="middle"
+              font-weight="700" font-size="13" fill="#6f4a2f">Tracker.update(detections)</text>
+        <line x1="90" y1="299" x2="470" y2="299" stroke="#ddd6ce" stroke-width="0.8"/>
+        <text x="280" y="316" text-anchor="middle"
+              font-size="11" fill="#6f6a63">① KalmanTrack.predict()  — 所有既有 Track</text>
+        <text x="280" y="333" text-anchor="middle"
+              font-size="11" fill="#6f6a63">② match_tracks()  — 建代價矩陣 + Hungarian 分配</text>
+        <text x="280" y="350" text-anchor="middle"
+              font-size="11" fill="#6f6a63">③ 配對成功 → KalmanTrack.update()  ·  hits++  ·  age=0</text>
+        <text x="280" y="367" text-anchor="middle"
+              font-size="11" fill="#6f6a63">④ 未配對偵測 → 查 Graveyard 回收 ID，或建新 Track</text>
+        <text x="280" y="384" text-anchor="middle"
+              font-size="11" fill="#6f6a63">⑤ 未配對 Track → age++；超過 max_age → deleted</text>
+        <text x="280" y="401" text-anchor="middle"
+              font-size="11" fill="#6f6a63">⑥ deleted Track 移入 Graveyard</text>
+        <text x="280" y="421" text-anchor="middle"
+              font-size="10" fill="#9a9288">回傳：confirmed（hits ≥ min_hits）且 age == 0 的 Track</text>
+        <text x="280" y="436" text-anchor="middle"
+              font-size="10" fill="#9a9288">sdc_tracker.py  ·  KalmanTrack / Tracker</text>
+
+        <line x1="280" y1="444" x2="280" y2="462" stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Step 5: CSV -->
+        <rect x="80" y="462" width="400" height="48" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="280" y="483" text-anchor="middle"
+              font-weight="700" font-size="12" fill="#9a4f2f">generate_cluster_track_dict()  →  save_tracking_mask_to_csv()</text>
+        <text x="280" y="502" text-anchor="middle"
+              font-size="11" fill="#6f6a63">{cluster_id: track_id}  →  result.csv</text>
+
+        <line x1="280" y1="510" x2="280" y2="528" stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- Output -->
+        <rect x="130" y="528" width="300" height="40" rx="10"
+              fill="#dde8ff" stroke="#aabbdd" stroke-width="1.5"/>
+        <text x="280" y="547" text-anchor="middle"
+              font-weight="700" font-size="13" fill="#2b3a5a">result.csv（Kaggle 提交格式）</text>
+        <text x="280" y="563" text-anchor="middle"
+              font-size="11" fill="#4a5a7a">每點追蹤 ID ·  -1=靜態  ·  -2=未確認  ·  ≥0=追蹤 ID</text>
+      </svg>
+      <figcaption>
+        每幀的追蹤流程。Tracker 內部依序執行 KF 預測、Hungarian 配對、狀態更新、Graveyard 管理。
+        只有 <code>confirmed</code>（hits ≥ min_hits）且當幀匹配（age = 0）的 Track 才寫入結果。
+      </figcaption>
+    </figure>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>運動模型：等速 Kalman Filter（KalmanTrack）</h2>
+    <p>
+      每個 Track 維護一個獨立的 CV（Constant Velocity）KF，狀態向量定義在 XY 平面：
+    </p>
+
+    <table>
+      <thead>
+        <tr><th>向量</th><th>維度</th><th>內容</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>狀態 \(\mathbf{x}\)</td>
+          <td>4 × 1</td>
+          <td>\([x,\; y,\; v_x,\; v_y]^\top\)；新建 Track 速度初始化為 \([0, 0]\)</td>
+        </tr>
+        <tr>
+          <td>觀測 \(\mathbf{z}\)</td>
+          <td>2 × 1</td>
+          <td>\([x,\; y]^\top\)（僅位置；無 range rate 觀測）</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>系統矩陣（<code>dt = 0.1</code> s）：</p>
+    \[
+      \mathbf{F} =
+      \begin{bmatrix} 1 & 0 & dt & 0 \\ 0 & 1 & 0 & dt \\ 0 & 0 & 1 & 0 \\ 0 & 0 & 0 & 1 \end{bmatrix},
+      \qquad
+      \mathbf{Q} = \operatorname{diag}\!\bigl(0.5\,dt^2,\; 0.5\,dt^2,\; 2\,dt,\; 2\,dt\bigr)
+    \]
+    \[
+      \mathbf{H} = \begin{bmatrix} 1 & 0 & 0 & 0 \\ 0 & 1 & 0 & 0 \end{bmatrix},
+      \qquad
+      \mathbf{R} = \operatorname{diag}(1,\; 1),
+      \qquad
+      \mathbf{P}_0 = \operatorname{diag}(2,\; 2,\; 5,\; 5)
+    \]
+    <p>
+      過程噪聲 \(\mathbf{Q}\) 以 \(dt\) 縮放，反映加速度雜訊對位置（\(\propto dt^2\)）與速度（\(\propto dt\)）的影響。
+      初始速度協方差設為 5，是位置協方差（2）的 2.5 倍，反映速度初始不確定性較高。
+    </p>
+
+    <p>KF 的 Predict / Update 採用標準線性卡爾曼公式：</p>
+    <pre><code>predict:
+  x̂ = F @ x
+  P = F @ P @ Fᵀ + Q
+
+update (given detection z = [x, y]):
+  S = H @ P @ Hᵀ + R
+  K = P @ Hᵀ @ S⁻¹
+  x = x + K @ (z − H @ x)
+  P = (I − K @ H) @ P</code></pre>
+
+    <div class="callout">
+      與本組方法的差異：本組 KF 觀測向量為 \([x, y, \dot{r}]\)（增廣 range rate），
+      利用都卜勒速度加速速度收斂；隊友僅觀測位置 \([x, y]\)，速度完全靠位置差推算。
+      兩者各有取捨——增廣觀測收斂快但實作較複雜；純位置觀測更簡潔、對 RCS 不均勻場景更穩健。
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>代價函數與 Hungarian 配對</h2>
+
+    <h3>代價函數</h3>
+    <p>
+      對每個 (Track \(i\), Detection \(j\)) pair，代價由三項相加：
+    </p>
+    \[
+      c(i, j)
+      \;=\;
+      \underbrace{\|\hat{\mathbf{x}}_i - \mathbf{d}_j\|_2}_{\text{空間距離}}
+      \;+\;
+      \underbrace{w_{rr}\,\bigl|\dot{r}_i - \dot{r}_j\bigr|}_{\text{Range Rate 項}}
+      \;+\;
+      \underbrace{w_{rcs}\,\bigl|\text{RCS}_i - \text{RCS}_j\bigr|}_{\text{RCS 項}}
+    \]
+    <p>
+      其中 \(\hat{\mathbf{x}}_i \in \mathbb{R}^2\) 為 Track \(i\) 的 KF 預測位置，
+      \(\mathbf{d}_j\) 為 Detection \(j\) 的 cluster centroid。
+      若空間距離超過 <code>max_distance</code>，代價直接設為 \(10^9\)（硬閘門）。
+    </p>
+
+    <div class="callout">
+      RCS 項是隊友方案的特色。RCS（Radar Cross Section）反映物件的雷達反射強度，
+      同種類車輛的 RCS 具備跨幀一致性，可輔助區分密集場景中位置相近的不同目標。
+      本組代價函數尚未納入 RCS，這是可借鑑的改進方向。
+    </div>
+
+    <h3>Hungarian 分配</h3>
+    <p>
+      代價矩陣建立後，呼叫 <code>scipy.optimize.linear_sum_assignment()</code>
+      求全域最優一對一分配。分配後再次過濾：距離仍超過 <code>max_distance</code> 的 pair 視為未匹配，
+      防止強制分配到閘門外的目標。
+    </p>
+    <pre><code>gated[dist_xy > max_distance] = 1e9
+row_idx, col_idx = linear_sum_assignment(gated)
+
+for r, c in zip(row_idx, col_idx):
+    if dist_xy[r, c] <= max_distance:
+        matched.append((track_indices[r], det_indices[c]))</code></pre>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>Track 生命週期管理</h2>
+
+    <p>每個 Track 經歷三個狀態：</p>
+    <table>
+      <thead>
+        <tr><th>狀態</th><th>條件</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>tentative</code></td>
+          <td>hits &lt; min_hits</td>
+          <td>新建 Track，尚未確認為真實物件；不輸出至 result.csv</td>
+        </tr>
+        <tr>
+          <td><code>confirmed</code></td>
+          <td>hits ≥ min_hits</td>
+          <td>已確認為追蹤目標；當幀有匹配（age = 0）時輸出至 result.csv</td>
+        </tr>
+        <tr>
+          <td><code>deleted</code></td>
+          <td>age &gt; max_age</td>
+          <td>連續未匹配超過閾值，移入 Graveyard</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>
+      <strong>關鍵設計</strong>：確認 Track 在未匹配的幀（age &gt; 0）<em>不輸出</em>到 result.csv，
+      即使 Track 仍存活。原因是每幀的 cluster_id 從 0 重新編號，未匹配幀儲存的舊 cluster_id
+      可能與本幀的不同物件衝突，輸出會造成 ID-Switch。
+    </p>
+    <pre><code>for track in self.tracks:
+    if track.track_state != "confirmed":
+        continue
+    if track.age > 0:
+        continue    # 避免舊 cluster_id 與本幀衝突
+    confirmed_tracks.append([x, y, z, cluster_id, track_id])</code></pre>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>Graveyard Re-ID</h2>
+    <p>
+      刪除的 Track 不立即丟棄，而是存入 <strong>Graveyard 緩衝區</strong>，
+      保留其最後一次<em>真實量測</em>位置（<code>last_measured_xy</code>，非 KF 漂移後的預測位置）。
+      當新 Detection 出現時，先查詢 Graveyard，若距離小於 <code>max_distance</code> 則回收舊 ID。
+    </p>
+
+    <pre><code># 刪除 → 加入 Graveyard（儲存最後量測位置，非 KF 漂移位置）
+self._graveyard.append({
+    "xy":         track.last_measured_xy,  # 真實量測，不受 KF 漂移影響
+    "range_rate": track.range_rate,
+    "track_id":   track.track_id,
+    "dead_for":   0,
+})
+
+# 新建 Track 時先查詢 Graveyard
+def _match_graveyard(self, detection):
+    for entry in self._graveyard:
+        d = np.linalg.norm(entry["xy"] - detection[:2])
+        if d < self.max_distance:
+            self._graveyard.remove(entry)  # 消耗後不重複使用
+            return entry["track_id"]
+    return None  # 無匹配 → 分配新 ID</code></pre>
+
+    <p>
+      Graveyard 中的條目在 <code>dead_for</code> 超過 <code>graveyard_age = max_age</code> 幀後自動過期。
+      已被回收的條目立即從 Graveyard 移除（consumed），防止同一舊 ID 被多個新 Track 搶佔。
+    </p>
+
+    <div class="callout">
+      <strong>與本組的 Re-ID 進度對照：</strong>
+      隊友已實作 Position-only Graveyard Re-ID（對應本組「場景 ③」）。
+      本組因場景 ③ 難度較高（需外觀相似度比對），目前尚未實作。
+      隊友方案的限制：純距離閘門在物件密集場景可能將不同物件的 Re-ID 錯誤配對；
+      外觀（SAM2 mask 特徵）輔助可提高可靠性。
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>參數設定</h2>
+    <table>
+      <thead>
+        <tr><th>參數</th><th>預設值（CLI）</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>max_age</code></td><td>8</td><td>未匹配幾幀後刪除 Track；同時作為 graveyard_age</td></tr>
+        <tr><td><code>min_hits</code></td><td>2</td><td>累積幾次匹配後從 tentative 升為 confirmed</td></tr>
+        <tr><td><code>max_distance</code></td><td>5.0 m</td><td>空間距離硬閘門（同時用於 Graveyard 查詢）</td></tr>
+        <tr><td><code>range_rate_weight</code></td><td>1.0</td><td>代價函數中 range rate 差值的權重 \(w_{rr}\)</td></tr>
+        <tr><td><code>rcs_weight</code></td><td>0.05</td><td>代價函數中 RCS 差值的權重 \(w_{rcs}\)</td></tr>
+        <tr><td><code>dt</code></td><td>0.1 s</td><td>幀間時間步長（10 Hz）</td></tr>
+      </tbody>
+    </table>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>與本組方法對照</h2>
+    <table>
+      <thead>
+        <tr><th>面向</th><th>隊友（Competition 1）</th><th>本組（Competition 2）</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>KF 觀測</td>
+          <td>\([x, y]\)（純位置）</td>
+          <td>\([x, y, \dot{r}]\)（增廣 range rate，加速速度收斂）</td>
+        </tr>
+        <tr>
+          <td>閘門策略</td>
+          <td>Euclidean 硬閘門（單層）</td>
+          <td>Euclidean 硬閘門 + Mahalanobis 軟閘門（雙層）</td>
+        </tr>
+        <tr>
+          <td>代價特徵</td>
+          <td>空間距離 + range rate + RCS</td>
+          <td>Mahalanobis 距離 + range rate（無 RCS）</td>
+        </tr>
+        <tr>
+          <td>Graveyard Re-ID</td>
+          <td>已實作（位置閘門，pure position）</td>
+          <td>尚未實作（場景 ③，待加外觀相似度）</td>
+        </tr>
+        <tr>
+          <td>Camera 輔助</td>
+          <td>無（Competition 1 不需要）</td>
+          <td>YOLO + SAM2 VideoPredictor（age 凍結 + 配對補救）</td>
+        </tr>
+        <tr>
+          <td>自車補償</td>
+          <td>不需要（靜態自車）</td>
+          <td>KF 定義在 ego frame，range rate 語義一致，無需外部 ego 速度</td>
+        </tr>
+      </tbody>
+    </table>
+
+  </main>
+</body>
+</html>

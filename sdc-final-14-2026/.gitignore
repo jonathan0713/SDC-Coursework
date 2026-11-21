@@ -1,0 +1,10 @@
+*.zip
+**.pytest_cache/
+.venv/
+**__pycache__/
+archive/
+data/public_dev/
+data/test_input/
+data/*
+yolo*
+cite/

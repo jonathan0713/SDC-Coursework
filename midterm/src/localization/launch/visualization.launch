@@ -1,0 +1,4 @@
+<launch>
+    <node pkg="map" type="visualization" name="visualization_node" output="screen"/>
+    <node pkg="rviz" type="rviz" name="display_result" output="screen" args="-d /catkin_ws/src/localization/config/visualization.rviz" />
+</launch>

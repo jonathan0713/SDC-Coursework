@@ -1,0 +1,1436 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOT 追蹤器架構</title>
+  <link rel="stylesheet" href="./doc.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+          onload="renderMathInElement(document.body, {
+            delimiters: [
+              {left: '\\[', right: '\\]', display: true},
+              {left: '\\(', right: '\\)', display: false}
+            ]
+          })"></script>
+  <style>
+    /* ── SVG pipeline diagram ── */
+    .pipeline-figure {
+      margin: 32px 0;
+      overflow-x: auto;
+    }
+    .pipeline-figure svg {
+      display: block;
+      max-width: 100%;
+      height: auto;
+    }
+    /* ── inline math look-alike ── */
+    .math {
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+      background: var(--code-bg);
+      border-radius: 5px;
+      padding: 0.12em 0.3em;
+    }
+    /* ── covariance table ── */
+    table td:nth-child(n+2) {
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 0.88em;
+    }
+    td.warn { color: #9a4f2f; font-weight: 650; }
+  </style>
+</head>
+<body>
+  <main class="doc-shell">
+    <div class="eyebrow">SDC Final · 技術筆記</div>
+    <h1>MOT 追蹤器架構</h1>
+    <p class="lead">
+      本文說明目前實做的多目標追蹤管道，依邏輯職責分為三個高層階段：
+      <strong>偵測與預測</strong>（01–02）、
+      <strong>配對決策</strong>（03a–04；04 涵蓋雷達 Hungarian 配對與 camera-mask 補救，抽象為 cluster × mask × track 分配）、
+      <strong>狀態管理</strong>（05a–05c）。
+      各步驟涵蓋等速 Kalman Filter 運動模型、雙層閘門與代價函數、
+      以及 <strong>Camera Gate（YOLO + SAM2 VideoPredictor）</strong>：
+      雷達暫時丟失目標時，以相機影像確認目標是否仍可見，
+      避免 Track 因短暫無偵測而提前刪除造成不必要的 ID-Switch；
+      相機 mask 也用於配對決策階段（05a.5）補救 Kalman 漂移造成的誤排。
+    </p>
+    <div class="callout" style="border-left-color:#c8a04a;background:#fff8ee;">
+      <strong>比賽版本聲明：</strong>
+      實際參賽得分所使用的版本<strong>關閉了 Camera Gate</strong>
+      （<code>camera_gate.enabled: false</code>），
+      僅依賴雷達追蹤管道（步驟 01–05c；05c 直接執行老化，無相機凍結分支）。
+      Camera Gate（YOLO + SAM2）的架構說明保留於本文，作為技術記錄與未來研究參考。
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>架構圖</h2>
+    <p>
+      每一幀的處理流程分為六個階段，
+      對應 <code>main.py</code> → <code>sdc_tracker.py</code> → <code>utils/</code> 的呼叫鏈。
+    </p>
+
+    <figure class="pipeline-figure">
+      <svg viewBox="0 0 890 714" xmlns="http://www.w3.org/2000/svg"
+           font-family="Inter, ui-sans-serif, system-ui, sans-serif">
+        <defs>
+          <marker id="arr" markerWidth="9" markerHeight="7"
+                  refX="8" refY="3.5" orient="auto">
+            <polygon points="0 0, 9 3.5, 0 7" fill="#9a9288"/>
+          </marker>
+          <marker id="arr-left" markerWidth="9" markerHeight="7"
+                  refX="1" refY="3.5" orient="auto">
+            <polygon points="9 0, 0 3.5, 9 7" fill="#9a9288"/>
+          </marker>
+          <marker id="arr-blue" markerWidth="9" markerHeight="7"
+                  refX="8" refY="3.5" orient="auto">
+            <polygon points="0 0, 9 3.5, 0 7" fill="#7a98c8"/>
+          </marker>
+        </defs>
+
+        <!-- ── Input: Radar ───────────────────────────────────── -->
+        <rect x="200" y="12" width="320" height="44" rx="10"
+              fill="#ddeedd" stroke="#9abf9a" stroke-width="1.5"/>
+        <text x="360" y="31" text-anchor="middle"
+              font-weight="700" font-size="13" fill="#2b4a2b">雷達點雲</text>
+        <text x="360" y="49" text-anchor="middle"
+              font-size="11" fill="#4a7a4a">Radar Point Cloud  (F × 4)  [x, y, z, range_rate]</text>
+
+        <!-- ── Input: Camera (new) ────────────────────────────── -->
+        <rect x="540" y="12" width="220" height="44" rx="10"
+              fill="#dde8ff" stroke="#7a98c8" stroke-width="1.5"/>
+        <text x="650" y="31" text-anchor="middle"
+              font-weight="700" font-size="13" fill="#2b3a5a">相機影像</text>
+        <text x="650" y="49" text-anchor="middle"
+              font-size="11" fill="#4a5a7a">Camera Frame  (H × W × 3)  RGB</text>
+
+        <!-- dashed arrow: camera → CameraGate (L-shaped along right side) -->
+        <path d="M 760,34 L 820,34 L 820,500"
+              stroke="#7a98c8" stroke-width="1.2" fill="none"
+              stroke-dasharray="4,3" marker-end="url(#arr-blue)"/>
+        <text x="828" y="300" font-size="10" fill="#7a98c8">frame_img</text>
+
+        <!-- arrow 1: radar → box 01 -->
+        <line x1="360" y1="56" x2="360" y2="74"
+              stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- ── Process 01 ──────────────────────────────────────── -->
+        <rect x="178" y="74" width="364" height="64" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="360" y="97" text-anchor="middle"
+              font-weight="700" font-size="12" fill="#9a4f2f">01  偵測萃取</text>
+        <text x="360" y="114" text-anchor="middle"
+              font-size="11" fill="#6f6a63">calculate_cluster_centroids()  +  build_detections()</text>
+        <text x="360" y="130" text-anchor="middle"
+              font-size="10" fill="#9a9288">src/utils/detection.py</text>
+
+        <!-- arrow 2 -->
+        <line x1="360" y1="138" x2="360" y2="156"
+              stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- ── Data chip: detections ──────────────────────────── -->
+        <rect x="210" y="156" width="300" height="28" rx="7"
+              fill="#fffdf8" stroke="#c8bfb5" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="360" y="175" text-anchor="middle"
+              font-size="11" fill="#6f6a63">detections  (N × 6)  [x, y, z, cluster_id, range_rate, n_points]</text>
+
+        <!-- detections bypass (dashed, right side of pipeline) -->
+        <path d="M 510,170 L 566,170 L 566,308 L 542,308"
+              stroke="#9a9288" stroke-width="1.2" fill="none"
+              stroke-dasharray="4,3" marker-end="url(#arr)"/>
+        <text transform="translate(576,240) rotate(90)"
+              text-anchor="middle" font-size="10" fill="#9a9288">detections[:, :2]</text>
+
+        <!-- arrow 3 -->
+        <line x1="360" y1="184" x2="360" y2="202"
+              stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+
+        <!-- ── Side box: existing tracks ─────────────────────── -->
+        <rect x="14" y="198" width="156" height="66" rx="8"
+              fill="#f4f0eb" stroke="#ddd6ce" stroke-width="1"/>
+        <text x="92" y="220" text-anchor="middle"
+              font-size="11.5" fill="#6f6a63" font-weight="650">既有 Track 列表</text>
+        <text x="92" y="238" text-anchor="middle"
+              font-size="10" fill="#9a9288">filter.state  →  [x, y]</text>
+        <text x="92" y="253" text-anchor="middle"
+              font-size="10" fill="#9a9288">filter.covariance  →  2×2</text>
+        <line x1="170" y1="231" x2="178" y2="231"
+              stroke="#9a9288" stroke-width="1.2" marker-end="url(#arr)"/>
+
+        <!-- ── Process 02: Predict ────────────────────────────── -->
+        <rect x="178" y="202" width="364" height="64" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="360" y="225" text-anchor="middle"
+              font-weight="700" font-size="12" fill="#9a4f2f">02  運動預測</text>
+        <text x="360" y="242" text-anchor="middle"
+              font-size="11" fill="#6f6a63">for track in tracks:  track.filter.predict()</text>
+        <text x="360" y="258" text-anchor="middle"
+              font-size="10" fill="#9a9288">src/sdc_tracker.py  ·  utils/filter.py  (KalmanFilter)</text>
+
+        <!-- arrow 4 + label -->
+        <line x1="360" y1="266" x2="360" y2="284"
+              stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="185" y="279" font-size="10" fill="#9a9288">
+          predicted_positions, predicted_covs
+        </text>
+
+        <!-- ── Process 03a: Gate ──────────────────────────────── -->
+        <rect x="178" y="284" width="364" height="64" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="360" y="307" text-anchor="middle"
+              font-weight="700" font-size="12" fill="#9a4f2f">03a  Mahalanobis 閘門</text>
+        <text x="360" y="324" text-anchor="middle"
+              font-size="11" fill="#6f6a63">gate(predicted_positions, detections,</text>
+        <text x="360" y="340" text-anchor="middle"
+              font-size="11" fill="#6f6a63">predicted_covs, max_distance)</text>
+
+        <!-- arrow 5 + label -->
+        <line x1="360" y1="348" x2="360" y2="366"
+              stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="366" y="361" font-size="10" fill="#9a9288">valid_pairs  set[(track_idx, det_idx)]</text>
+
+        <!-- ── Process 03b: Cost Matrix ──────────────────────── -->
+        <rect x="178" y="366" width="364" height="64" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="360" y="389" text-anchor="middle"
+              font-weight="700" font-size="12" fill="#9a4f2f">03b  建立代價矩陣</text>
+        <text x="360" y="406" text-anchor="middle"
+              font-size="11" fill="#6f6a63">build_cost_matrix(valid_pairs,</text>
+        <text x="360" y="422" text-anchor="middle"
+              font-size="11" fill="#6f6a63">predicted_positions, detections, covs)</text>
+
+        <!-- arrow 6 + label -->
+        <line x1="360" y1="430" x2="360" y2="448"
+              stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="366" y="443" font-size="10" fill="#9a9288">cost  (M × N)  ndarray，無效 pair → ∞</text>
+
+        <!-- ── Process 04: Hungarian ──────────────────────────── -->
+        <rect x="178" y="448" width="364" height="64" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="360" y="471" text-anchor="middle"
+              font-weight="700" font-size="12" fill="#9a4f2f">04  配對決策</text>
+        <text x="360" y="488" text-anchor="middle"
+              font-size="11" fill="#6f6a63">Hungarian（雷達）+ camera-mask 補救</text>
+        <text x="360" y="504" text-anchor="middle"
+              font-size="10" fill="#9a9288">cluster × mask × track  ·  全域最佳分配</text>
+
+        <!-- 3-way branch from Process 04 -->
+        <line x1="360" y1="512" x2="360" y2="524" stroke="#9a9288" stroke-width="1.2"/>
+        <line x1="134" y1="524" x2="586" y2="524" stroke="#9a9288" stroke-width="1.2"/>
+        <line x1="134" y1="524" x2="134" y2="532"
+              stroke="#9a9288" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="360" y1="524" x2="360" y2="532"
+              stroke="#9a9288" stroke-width="1.2" marker-end="url(#arr)"/>
+        <line x1="586" y1="524" x2="586" y2="532"
+              stroke="#9a9288" stroke-width="1.2" marker-end="url(#arr)"/>
+        <text x="134" y="521" text-anchor="middle"
+              font-size="9.5" fill="#9a9288">matched</text>
+        <text x="360" y="521" text-anchor="middle"
+              font-size="9.5" fill="#9a9288">unmatched_dets</text>
+        <text x="586" y="521" text-anchor="middle"
+              font-size="9.5" fill="#9a9288">unmatched_tracks</text>
+
+        <!-- ── Process 05a (h=88) ─────────────────────────────── -->
+        <rect x="34" y="532" width="200" height="88" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="134" y="554" text-anchor="middle"
+              font-weight="700" font-size="11.5" fill="#9a4f2f">05a  配對更新</text>
+        <text x="134" y="571" text-anchor="middle"
+              font-size="10.5" fill="#6f6a63">filter.correct([x, y, ṙ])</text>
+        <text x="134" y="585" text-anchor="middle"
+              font-size="9.5" fill="#9a9288">hits++  ·  age = 0  ·  camera_frozen = 0</text>
+        <text x="134" y="601" text-anchor="middle"
+              font-size="9.5" fill="#4a7a4a">SAM2 維護（未登錄 / mask 丟失）</text>
+
+        <!-- ── Process 05b (h=88) ─────────────────────────────── -->
+        <rect x="260" y="532" width="200" height="88" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="360" y="554" text-anchor="middle"
+              font-weight="700" font-size="11.5" fill="#9a4f2f">05b  新建 Track</text>
+        <text x="360" y="571" text-anchor="middle"
+              font-size="10.5" fill="#6f6a63">Track(KalmanFilter(det[:2], v₀=ṙ·r̂))</text>
+        <text x="360" y="585" text-anchor="middle"
+              font-size="9.5" fill="#9a9288">state = active  ·  hits = 1</text>
+        <text x="360" y="601" text-anchor="middle"
+              font-size="9.5" fill="#4a7a4a">register_track(SAM2)</text>
+
+        <!-- ── Process 05c (h=88, updated: Camera Gate) ────────── -->
+        <rect x="486" y="532" width="200" height="88" rx="10"
+              fill="#eee7dc" stroke="#c8bfb5" stroke-width="1.5"/>
+        <text x="586" y="552" text-anchor="middle"
+              font-weight="700" font-size="11.5" fill="#9a4f2f">05c  Camera Gate · 老化</text>
+        <text x="586" y="568" text-anchor="middle"
+              font-size="10" fill="#6f6a63">camera_gate.is_visible(p3d)?</text>
+        <text x="586" y="582" text-anchor="middle"
+              font-size="10" fill="#4a7a4a">→ camera_frozen++  (True)</text>
+        <text x="586" y="596" text-anchor="middle"
+              font-size="10" fill="#9a9288">→ age++  /  deleted  (False)</text>
+        <text x="586" y="612" text-anchor="middle"
+              font-size="9.5" fill="#b8b0a6">gate=None：直接 age++</text>
+
+        <!-- arrow: 05c queries CameraGate -->
+        <line x1="686" y1="568" x2="712" y2="568"
+              stroke="#7a98c8" stroke-width="1.2" marker-end="url(#arr-blue)"/>
+
+        <!-- ── CameraGate side box ─────────────────────────────── -->
+        <rect x="712" y="508" width="166" height="140" rx="10"
+              fill="#dde8ff" stroke="#7a98c8" stroke-width="1.5"/>
+        <text x="795" y="527" text-anchor="middle"
+              font-weight="700" font-size="11.5" fill="#2b3a5a">CameraGate</text>
+        <text x="795" y="543" text-anchor="middle"
+              font-size="10.5" fill="#4a5a7a">YOLO + SAM2 VideoPredictor</text>
+        <line x1="722" y1="550" x2="868" y2="550"
+              stroke="#aabbdd" stroke-width="0.8"/>
+        <text x="795" y="562" text-anchor="middle"
+              font-size="10" fill="#4a5a7a">① YOLO bbox check（fast）</text>
+        <text x="795" y="576" text-anchor="middle"
+              font-size="10" fill="#4a5a7a">② SAM2 VideoPredictor</text>
+        <text x="795" y="590" text-anchor="middle"
+              font-size="10" fill="#4a5a7a">   persistent mask tracking</text>
+        <text x="795" y="606" text-anchor="middle"
+              font-size="9.5" fill="#6a7a8a">propagate() → _current_masks</text>
+        <text x="795" y="620" text-anchor="middle"
+              font-size="9.5" fill="#6a7a8a">True → age 凍結</text>
+        <text x="795" y="635" text-anchor="middle"
+              font-size="9" fill="#9aabad">src/utils/camera_gate.py</text>
+
+        <!-- Merge arrows: 05a + 05b bottoms (y=620) → output -->
+        <line x1="134" y1="620" x2="134" y2="638" stroke="#9a9288" stroke-width="1.2"/>
+        <line x1="360" y1="620" x2="360" y2="638" stroke="#9a9288" stroke-width="1.2"/>
+        <line x1="134" y1="638" x2="360" y2="638" stroke="#9a9288" stroke-width="1.2"/>
+        <line x1="360" y1="638" x2="360" y2="655"
+              stroke="#9a9288" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="366" y="651" font-size="9.5" fill="#9a9288">state == 'active'</text>
+
+        <!-- ── Output ──────────────────────────────────────────── -->
+        <rect x="200" y="655" width="320" height="44" rx="10"
+              fill="#dde8ff" stroke="#aabbdd" stroke-width="1.5"/>
+        <text x="360" y="674" text-anchor="middle"
+              font-weight="700" font-size="13" fill="#2b3a5a">Active Tracks</text>
+        <text x="360" y="692" text-anchor="middle"
+              font-size="11" fill="#4a5a7a">[x, y, z, cluster_id, track_id]</text>
+      </svg>
+      <figcaption>
+        每幀的追蹤管道。灰色虛線為 detections 繞過 predict 直接進入 gate 的路徑；
+        藍色虛線為相機影像（frame_img）流入 CameraGate 的路徑；
+        藍色實線箭頭為 05c 查詢 CameraGate 的調用。
+        05a 含 SAM2 retry（對未登錄 track 補嘗試 register_track）；
+        05b 含 register_track 初始化 SAM2；
+        04 配對決策包含兩個子步驟（程式碼標記 [05a.5]）：
+        ① Hungarian 雷達配對；② camera-mask 補救（state update 前增補 matched）。
+        propagate() 在所有 register_track 之後、05c 之前執行，更新 _current_masks。
+      </figcaption>
+    </figure>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>各步驟說明</h2>
+    <p>
+      步驟依<strong>邏輯職責</strong>分為三個群組。執行順序不變，但 05a.5 的配對語意
+      使其歸屬「配對決策」而非「狀態管理」。
+    </p>
+    <table>
+      <thead>
+        <tr><th>步驟</th><th>函數 / 位置</th><th>輸入</th><th>輸出</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td colspan="4" style="background:#f4f0eb;font-weight:700;font-size:11px;
+              letter-spacing:.05em;color:#6f4a2f;padding:6px 14px;
+              border-top:2px solid #c8bfb5;">
+            ① 偵測與預測階段 — Detection &amp; Prediction
+          </td>
+        </tr>
+        <tr>
+          <td><strong>01</strong> 偵測萃取</td>
+          <td><code>calculate_cluster_centroids()</code><br><code>build_detections()</code><br><small>utils/detection.py</small></td>
+          <td>moving_mask, moving_radar_pc, cluster_points_dict</td>
+          <td>detections (N × 6)<br><small style="color:#9a9288;">[x, y, z, cluster_id, range_rate, n_points]</small></td>
+        </tr>
+        <tr>
+          <td><strong>02</strong> 運動預測</td>
+          <td><code>track.filter.predict()</code><br><small>sdc_tracker.py, utils/filter.py</small></td>
+          <td>所有現有 Track</td>
+          <td>predicted_positions (M × 2)<br>predicted_covs (M × 2×2)</td>
+        </tr>
+        <tr>
+          <td colspan="4" style="background:#f4f0eb;font-weight:700;font-size:11px;
+              letter-spacing:.05em;color:#6f4a2f;padding:6px 14px;
+              border-top:2px solid #c8bfb5;">
+            ② 配對決策階段 — Matching
+            <span style="font-weight:400;color:#9a9288;">
+              （03a–04；04 抽象為 cluster × mask × track 分配，含雷達 Hungarian 與 camera-mask 補救兩個子步驟）
+            </span>
+          </td>
+        </tr>
+        <tr>
+          <td><strong>03a</strong> 閘門</td>
+          <td><code>gate()</code><br><small>utils/association.py</small></td>
+          <td>predicted_positions, detections, predicted_covs, max_distance</td>
+          <td>valid_pairs (set of (t, d))</td>
+        </tr>
+        <tr>
+          <td><strong>03b</strong> 代價矩陣</td>
+          <td><code>build_cost_matrix()</code><br><small>utils/association.py</small></td>
+          <td>valid_pairs, predicted_positions, detections, covs</td>
+          <td>cost (M × N)，無效 pair = ∞</td>
+        </tr>
+        <tr>
+          <td><strong>04</strong> 配對決策<br><small style="color:#9a9288;">cluster × mask × track</small></td>
+          <td><code>hungarian_assignment()</code><br><code>Tracker.update()</code><br><small>utils/association.py<br>sdc_tracker.py</small></td>
+          <td>cost (M × N)；unmatched_dets；<code>_current_masks</code>（上一幀）；<code>camera_frozen &gt; 0</code> 的 track</td>
+          <td>
+            <strong>① 雷達配對</strong>：<code>hungarian_assignment(cost)</code> 以 scipy 求全域最優一對一分配，產生 matched / unmatched_dets / unmatched_tracks<br>
+            <strong>② Camera-mask 補救</strong>（程式碼標記 [05a.5]，state update 前）：以影像空間的 Hungarian 分配 unmatched frozen tracks 與 unmatched detections；track 代表 = SAM2 mask 的距離圖（<code>distance_transform_edt(~mask)</code>，值為到最近 mask 邊界的像素距離）；cluster 代表 = <code>_project()</code> 投影點；閘門：像素距離 ≤ <code>cam_rescue_gate_px</code>；代價：該像素距離值（mask 內為 0，往外遞增）；配對成功的 pair 加入 matched、從 unmatched_* 移除；state update 統一由 05a 處理
+          </td>
+        </tr>
+        <tr>
+          <td colspan="4" style="background:#f4f0eb;font-weight:700;font-size:11px;
+              letter-spacing:.05em;color:#6f4a2f;padding:6px 14px;
+              border-top:2px solid #c8bfb5;">
+            ③ 狀態管理階段 — Track Management
+            <span style="font-weight:400;color:#9a9288;">
+              （Camera Gate 在此凍結 age；propagate 更新 _current_masks 供下一幀 05a.5 使用）
+            </span>
+          </td>
+        </tr>
+        <tr>
+          <td><strong>05a</strong> 配對更新</td>
+          <td><code>Tracker.update()</code><br><small>sdc_tracker.py</small></td>
+          <td>matched（04 輸出；含 Hungarian 配對與 camera-mask 補救結果）</td>
+          <td>
+            <strong>rr 軟修正（rr_vel_gate）：</strong>
+            在呼叫 <code>correct()</code> 前，計算 KF 全狀態預測的 range rate：
+            \(\hat{\dot{r}} = (v_x x + v_y y) / r\)。
+            若 \(|\dot{r}_{\text{det}} - \hat{\dot{r}}| \leq \text{rr\_vel\_gate}\) 則使用增廣觀測
+            <code>[x, y, ṙ]</code>；否則退回位置觀測 <code>[x, y]</code>（不更新速度狀態）。
+            此機制防止稀疏 cluster 的 Doppler 雜訊使 KF 速度狀態反向。<br><br>
+            <code>filter.correct(z)</code>；hits++；age=0；camera_frozen=0；<br>
+            SAM2 維護：① 對尚未登錄的 track 嘗試 <code>register_track()</code>（首幀在鏡頭外）；② 已登錄但 <code>_current_masks</code> 中 mask 缺失時以 <code>register_track(force=True)</code> 重新初始化（相機遮擋後復原，fail mode ②）
+          </td>
+        </tr>
+        <tr>
+          <td><strong>05b</strong> 新建 Track</td>
+          <td><code>Tracker.update()</code><br><small>sdc_tracker.py</small></td>
+          <td>unmatched_detections（05a.5 處理後剩餘）</td>
+          <td>
+            建立新 <code>Track</code>；速度初始化策略：<br>
+            若 <code>n_points &lt; rr_spawn_min_pts</code>（稀疏 cluster）
+            <strong>且</strong> <code>|ṙ| &gt; rr_vel_gate</code>（Doppler 超限），
+            則 \(v_0 = [0, 0]\)（避免雜訊 rr 導致初始速度反向）；
+            否則使用 <code>v₀ = ṙ·r̂</code>（range rate 徑向投影）。<br>
+            呼叫 <code>camera_gate.register_track()</code> 以 YOLO bbox 初始化 SAM2
+          </td>
+        </tr>
+        <tr>
+          <td><strong>05c pre</strong> SAM2 Propagate</td>
+          <td><code>CameraGate.propagate()</code><br><small>utils/camera_gate.py</small></td>
+          <td>frame_idx；必須在所有 register_track 之後</td>
+          <td><code>propagate_in_video(max_frame_num_to_track=1)</code> 推進一步，更新 <code>_current_masks</code></td>
+        </tr>
+        <tr>
+          <td><strong>05c</strong> Camera Gate · 老化</td>
+          <td><code>CameraGate.is_visible()</code><br><small>utils/camera_gate.py</small></td>
+          <td>unmatched_tracks + <code>_current_masks</code></td>
+          <td>
+            SAM2 有效 mask → camera_frozen++（age 凍結）；<br>
+            未登錄 track → YOLO bbox hit-check fallback；<br>
+            不可見 → age++；超過 max_age → deleted
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>Camera Gate（YOLO + SAM2 VideoPredictor）</h2>
+    <p>
+      Camera Gate 橫跨兩個階段：在<strong>配對決策</strong>階段以 SAM2 mask 補救被 Kalman 漂移誤排的 detection（05a.5）；
+      在<strong>狀態管理</strong>階段以 mask 凍結雷達丟失 track 的 age（05c）。
+    </p>
+
+    <h3>設計動機</h3>
+    <p>
+      雷達點雲可能因遮擋、掃描角度、反射率不足，導致某幀對移動物件沒有偵測。
+      若直接累計 age，Track 可能提前進入刪除流程，下一幀出現時須重新建立新 ID，
+      造成不必要的 ID-Switch（IDSW）。
+    </p>
+    <p>
+      Camera Gate 的策略：在 Track 未配對到雷達的幀，以相機影像確認目標是否仍可見。
+      若相機確認可見（<code>is_visible() → True</code>），
+      則凍結 age（<code>camera_frozen++</code>），不累計 age；
+      等雷達重新配對後（05a），<code>camera_frozen</code> 歸零、追蹤恢復正常。
+    </p>
+
+    <h3>Hybrid 偵測架構：YOLO + SAM2 VideoPredictor</h3>
+    <p>
+      純 YOLO 在遠距離小物件時完全失效，且無跨幀記憶。
+      以 YOLO-fail 後的投影點作為 point prompt 的 fallback 方式，
+      會因點位不準而讓 SAM2 分割到錯誤物件（例如附近的汽車）。
+      因此改採 <strong>SAM2 VideoPredictor 常駐追蹤</strong>，
+      每個 Track 以 YOLO bbox 初始化後獨立持有一條時序 mask：
+    </p>
+    <table>
+      <thead>
+        <tr><th>階段</th><th>方法</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>① 一級確認</strong></td>
+          <td>YOLO（<code>ultralytics</code>）</td>
+          <td>
+            每幀執行一次 <code>set_frame()</code> 時 eager 推論，多個 Track 共享結果。
+            命中 bounding box（含 <code>proj_margin_px</code> 容忍邊距）即返回 True。
+            新 Track 建立（05b）時，YOLO bbox 同時作為 SAM2 初始化的 conditioning frame。
+          </td>
+        </tr>
+        <tr>
+          <td><strong>② 常駐追蹤</strong></td>
+          <td>SAM2 <code>VideoPredictor</code></td>
+          <td>
+            <code>init_state(image_dir)</code> 於序列開始時預載所有幀至 CPU。
+            <code>register_track(track_id, frame_idx, p3d)</code> 以 YOLO bbox 在 Track
+            首次被偵測到的幀呼叫 <code>add_new_points_or_box()</code> 初始化。
+            每幀 <code>propagate_in_video(max_frame_num_to_track=1)</code> 推進一步，
+            累積時序記憶、更新 <code>_current_masks</code>（track_id → bool mask H×W）。
+            <code>is_visible()</code> 直接查 <code>_current_masks</code>；
+            未登錄 Track fallback 至 YOLO hit-check。
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>完整每幀呼叫流程</h3>
+    <pre><code># sdc_tracker.update() 每幀執行順序
+
+# [pre] YOLO eager 推論（必須在 05a/05b 之前，使 register_track 有 bbox 可用）
+camera_gate.set_frame(frame_img, frame_idx)
+
+# [02 ~ 03b] Kalman predict → 雙層閘門 → 代價矩陣（略）
+
+# [04] 配對決策：cluster × mask × track
+# 04-①  Hungarian 雷達配對
+matched, unmatched_detections, unmatched_tracks = hungarian_assignment(cost)
+
+# 04-②  Camera-mask 補救（影像空間 Hungarian，state update 前增補 matched）
+frozen = [(i, tracks[i]) for i in unmatched_tracks if tracks[i].camera_frozen > 0]
+det_uvs = [_project(det.p3d) for det in unmatched_detections]   # 投影一次
+rescue_cost = np.full((len(frozen), len(unmatched_detections)), np.inf)
+for fi, (_, track) in enumerate(frozen):
+    dist_map = distance_transform_edt(~_current_masks[track.track_id])
+    for di, uv in enumerate(det_uvs):
+        if uv is not None and in-bounds:
+            d = dist_map[v_px, u_px]            # 0 = mask 內；往外遞增
+            if d ≤ cam_rescue_gate_px:           # gate
+                rescue_cost[fi, di] = d          # cost
+for fi, di in hungarian_assignment(rescue_cost):
+    matched.append((frozen[fi][0], unmatched_detections[di]))
+
+# [05a] 配對更新（04 全部輸出）+ SAM2 維護
+for track_idx, det_idx in matched:
+    track.filter.correct([x, y, ṙ])
+    track.age = 0;  track.camera_frozen = 0
+    if track_id not in camera_gate._registered:         # 首幀在鏡頭外
+        camera_gate.register_track(track_id, frame_idx, p3d)
+    elif _current_masks.get(track_id) is None:          # 已登錄但 mask 丟失（fail mode ②）
+        camera_gate.register_track(track_id, frame_idx, p3d, force=True)
+
+# [05b] 新建 Track + 立即初始化 SAM2
+for det_idx in unmatched_detections:
+    track = Track(KalmanFilter(det[:2], v₀=ṙ·r̂))
+    camera_gate.register_track(new_track_id, frame_idx, p3d)
+
+# [05c pre] SAM2 推進一步（必須在所有 register_track 之後）
+camera_gate.propagate(frame_idx)   # → 更新 _current_masks
+
+# [05c pre-②] Drift guard：移除 KF 投影點與 mask 脫鉤的 mask（語義偏移防護）
+camera_gate.validate_masks({t.track_id: p3d(t) for t in registered_tracks})
+# → 移除的 mask 在下一幀 05a elif 分支觸發 register_track(force=True) 重新 condition
+
+# [05c] 老化
+for track_idx in unmatched_tracks:
+    p3d = [KF.state[x], KF.state[y], proj_z_height]
+    if camera_gate.is_visible(p3d, track_id=track_id):
+        track.camera_frozen += 1    # age 凍結
+        continue
+    track.age += 1
+    if track.age > max_age:
+        track.state = "deleted"</code></pre>
+
+    <h3>04-②：Camera-mask 補救配對<small style="font-weight:400;color:#9a9288;">（程式碼標記 [05a.5]）</small></h3>
+    <p>
+      當物件短暫消失後重現（例如機車被遮擋數幀後再現），Kalman 預測可能因多幀無修正而漂移，
+      導致 Hungarian（04-①）將重現的 cluster 排出 gate，使其進入 05b 生成新 Track。
+      新 Track 再呼叫 <code>register_track()</code> 時，若附近剛好有其他 YOLO 偵測到的物件
+      （例如路邊靜態汽車），SAM2 會被錯誤初始化到該物件。
+    </p>
+    <p>
+      04-② 以<strong>上一幀</strong>的 <code>_current_masks</code> 作為 frozen track 的影像空間代表，
+      在<strong>影像空間</strong>建立代價矩陣，再以 Hungarian 求全域最優一對一分配：
+    </p>
+    <ul>
+      <li>
+        <strong>Track 代表</strong>：對 SAM2 mask 做 <code>distance_transform_edt(~mask)</code>，
+        得到距離圖（shape 同原圖）。距離圖中每個像素的值 = 到最近 mask 邊界的像素距離；
+        mask 內部為 0，往外線性遞增。此表示法直接使用 SAM2 追蹤的真實物件輪廓，
+        不受 KF 漂移影響。
+      </li>
+      <li>
+        <strong>Cluster 代表</strong>：以 <code>_project()</code> 將 cluster radar 座標投影為影像像素 \((u, v)\)。
+      </li>
+      <li>
+        <strong>閘門（gate）</strong>：<code>dist_map[v, u] ≤ cam_rescue_gate_px</code>。
+        允許投影點落在 mask 外側一定像素範圍內，吸收 <code>proj_z_height</code> 近似帶來的垂直偏移；
+        超出閾值的 pair 代價設為 \(\infty\)。
+      </li>
+      <li>
+        <strong>代價</strong>：<code>dist_map[v, u]</code>（像素距離，越靠近 mask 中心越小）。
+      </li>
+      <li>
+        <strong>Hungarian</strong>：同 04-① 呼叫 <code>hungarian_assignment()</code>，全域最優、不重複分配。
+      </li>
+    </ul>
+    <p>
+      配對成功的 pair 加入 <code>matched</code>、從 <code>unmatched_tracks</code> / <code>unmatched_dets</code> 移除；
+      state update（<code>filter.correct()</code>、<code>hits++</code> 等）統一由後續 05a 迴圈處理，
+      不進入 05b 生成新 Track。使用上一幀 masks 的前提成立：
+      相鄰幀物件的像素位移遠小於物件尺寸，空間指向仍然有效。
+    </p>
+
+    <table>
+      <thead>
+        <tr><th>欄位</th><th>型別</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>track.camera_frozen</code></td>
+          <td>int</td>
+          <td>連續被相機 age 凍結的幀數；配對到雷達（05a 或 05a.5）時歸零</td>
+        </tr>
+        <tr>
+          <td><code>track.age</code></td>
+          <td>int</td>
+          <td>未配對到雷達的幀數；camera_frozen 為真時不累計</td>
+        </tr>
+        <tr>
+          <td><code>camera_gate._registered</code></td>
+          <td>set[int]</td>
+          <td>已成功初始化 SAM2 的 track_id 集合；未在此集合內的 track 使用 YOLO fallback</td>
+        </tr>
+        <tr>
+          <td><code>camera_gate._current_masks</code></td>
+          <td>dict[int, ndarray]</td>
+          <td>最近一次 propagate() 的結果；key = track_id，value = bool H×W mask</td>
+        </tr>
+        <tr>
+          <td><code>camera_gate._track_cls</code></td>
+          <td>dict[int, int]</td>
+          <td>各 track 首次成功登錄時的 YOLO COCO class id；force re-register 時用於過濾 bbox，防止 conditioning 到不同種類的物件；首次寫入後不覆蓋</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>失效場景分類：四類 Camera–Radar 配對問題</h3>
+    <p>
+      Camera Gate 的設計須應對四類不同的 Camera–Radar 配對失效場景，難易程度依序遞增：
+    </p>
+    <table>
+      <thead>
+        <tr><th>#</th><th>場景</th><th>可用資料</th><th>典型情境</th><th>對應策略</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>①</strong></td>
+          <td>有 mask，無 cluster</td>
+          <td><code>_current_masks</code> 有效；<br>雷達 cluster 缺失或落出 Mahalanobis 閘門</td>
+          <td>物件短暫消失後重現，KF 多幀無修正而漂移，cluster 重現時落出 gate</td>
+          <td><strong>已解決</strong>（04-②）：影像空間 Hungarian 補救配對，以 <code>distance_transform_edt</code> 作為代價</td>
+        </tr>
+        <tr>
+          <td><strong>②</strong></td>
+          <td>有 cluster，無 mask<br><small style="color:#9a9288;">（較易 Re-ID）</small></td>
+          <td>雷達 cluster 成功配對（05a）；<br><code>_current_masks</code> 中對應 track 缺失或 None</td>
+          <td>超車車輛完全遮擋目標影像，SAM2 propagation 中斷；雷達可穿透，cluster 仍存在</td>
+          <td>
+            <strong>已解決</strong>（05a）：每次雷達配對後，若 track 已登錄但 <code>_current_masks</code> 中無對應 mask，立即以 <code>register_track(force=True)</code> 強制重新初始化；YOLO 看不到時 graceful fail，不破壞狀態。<br>
+            <strong>Edge case ②（已實作）</strong>：<code>_best_yolo_box()</code> 新增 <code>required_cls</code> 參數；force re-register 時僅接受與首次登錄相同 YOLO class 的 bbox（防止遮擋解除後誤 condition 到附近不同種類的物件）；class 記錄於 <code>_track_cls: dict[int, int]</code>，首次登錄後不覆蓋。<br>
+            <small style="color:#9a9288;">
+              已知限制：物件距離遠、像素過少時 YOLO 無法辨識，re-register 靜默失敗（同 05b 初始化的已知限制，接受此行為）
+            </small>
+          </td>
+        </tr>
+        <tr>
+          <td><strong>③</strong></td>
+          <td>有 mask，有 cluster<br><small style="color:#9a9288;">（KF–mask 語義脫鉤；silent failure）</small></td>
+          <td><code>_current_masks</code> 有效且面積正常；雷達 cluster 成功配對（05a）；但 mask 已追蹤錯誤物件</td>
+          <td>同向車輛與對向車輛在畫面中交叉，SAM2 temporal memory 將 mask 漸漸轉移至另一物件；KF 仍追正確目標，mask 已追蹤對向車道車輛</td>
+          <td>
+            <strong>已解決</strong>（drift guard）：每幀 <code>propagate()</code> 後呼叫 <code>validate_masks()</code>，將所有已登錄 track 的 KF 位置投影至影像空間，若投影點距離 mask 邊界超過 <code>cam_mask_drift_px</code> 像素，則移除 mask；移除觸發現有 05a elif 分支的 <code>register_track(force=True)</code>，在下一次雷達配對時自動重新 condition。<br>
+            <strong>新 track 登錄遮擋問題（已解決，carve-out）</strong>：05b 呼叫 <code>register_track()</code> 時，若新 track 的投影點落在既有 track 的 mask 內，改呼叫 <code>_register_with_carveout()</code>：將所有現有 mask 區域 zero-fill 後重跑 YOLO，以摳掉遮擋物後找到的 bbox 作為 SAM2 prompt；SAM2 仍使用原始幀的預計算特徵。
+          </td>
+        </tr>
+        <tr>
+          <td><strong>④</strong></td>
+          <td>無 cluster，無 mask<br><small style="color:#9a9288;">（較難 Re-ID；track 死亡後復活）</small></td>
+          <td>track 已刪除（超出 <code>max_age</code>）；新 cluster 與 YOLO bbox 重新出現於相近位置</td>
+          <td>車輛超車離開視野後 track 死亡；等紅燈後重新進入雷達與相機視野</td>
+          <td><strong>待實作</strong>：graveyard buffer（儲存最後一幀 mask 特徵）+ 位置閘門 + 外觀相似度 Re-ID，復活舊 track_id</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      場景 ① 已由 <strong>04-②</strong> 在配對決策階段解決。
+      場景 ② 因 track 仍存活且位置連續，mask 重新初始化即可。
+      場景 ③ 表面上看起來最健康（mask 與 cluster 皆存在），卻是最難被察覺的 silent failure——
+      drift guard 在每幀 <code>validate_masks()</code> 中以 KF 投影與 mask 的空間一致性進行交叉核對；
+      carve-out 解決新 track 被既有物件遮擋時的 bbox 汙染問題。
+      場景 ④ 需維護 <em>graveyard buffer</em>，並仰賴場景 ②③ 保障 graveyard 中的 mask 品質——
+      建議最後處理場景 ④。
+    </p>
+
+    <h3>3D → 2D 投影模型（含 z 高度鎖定）</h3>
+    <p>
+      給定雷達/自車 frame 下的 3D 點，投影前先以固定高度 \(z_{\text{proj}}\) 取代原始 z：
+    </p>
+    \[
+      \mathbf{p}_{3d}^* = [x,\; y,\; z_{\text{proj}}]^\top,
+      \qquad
+      \mathbf{p}_{cam} = \mathbf{R}\,\mathbf{p}_{3d}^* + \mathbf{t}
+    \]
+    \[
+      u = \frac{f_x \, p_{cam,x}}{p_{cam,z}} + c_x,
+      \quad
+      v = \frac{f_y \, p_{cam,y}}{p_{cam,z}} + c_y
+    \]
+    <p>
+      雷達量測的原始 \(z\) 帶有明顯高度雜訊，會造成投影點在影像上垂直抖動；
+      鎖定為常數 \(z_{\text{proj}}\)（對應地面車輛的典型高度，單位 m）可消除此效應。
+      最佳值透過 <code>src/tools/tune_proj_z.py</code> 互動工具調整（即時顯示原始 z 與
+      固定 z 的投影差異），確認後寫入 <code>proj_z_height</code> 設定。
+      若 \(p_{cam,z} < 0.1\)（物體在相機後方）或 \((u, v)\) 超出影像邊界，視為不可見。
+      外參 \(\mathbf{R}, \mathbf{t}\) 與內參 \(\mathbf{K}\)
+      均從 <code>data/outputs/&lt;seq&gt;_extrinsics.npz</code> 載入。
+    </p>
+
+    <h3>設定參數（<code>camera_gate</code> 區段）</h3>
+    <table>
+      <thead>
+        <tr><th>參數</th><th>預設值</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>enabled</code></td><td>true</td><td>是否啟用 Camera Gate</td></tr>
+        <tr><td><code>yolo_model</code></td><td>weights/yolo11s.pt</td><td>YOLO 模型路徑</td></tr>
+        <tr><td><code>yolo_conf</code></td><td>0.35</td><td>YOLO 偵測信心值下限</td></tr>
+        <tr><td><code>yolo_classes</code></td><td>[2,3,5,7]</td><td>COCO 類別：car, motorcycle, bus, truck</td></tr>
+        <tr><td><code>proj_margin_px</code></td><td>20</td><td>投影點命中 YOLO bbox 邊界的容忍像素</td></tr>
+        <tr><td><code>proj_z_height</code></td><td>0.0</td><td>投影時固定的 z 高度（m）；以 <code>tune_proj_z.py</code> 調整；消除雷達高度雜訊造成的垂直抖動</td></tr>
+        <tr><td><code>sam2_ckpt</code></td><td>null</td><td>SAM2 checkpoint 路徑；null = 自動尋找 data/sam2_checkpoints/</td></tr>
+        <tr><td><code>sam2_cfg</code></td><td>sam2_hiera_t</td><td>SAM2 config 名稱</td></tr>
+        <tr><td><code>sam2_mask_min_px</code></td><td>50</td><td>mask 面積下限（像素），過濾噪點</td></tr>
+        <tr><td><code>sam2_mask_max_px</code></td><td>100000</td><td>mask 面積上限（像素），過濾背景大區域</td></tr>
+        <tr><td><code>cam_mask_drift_px</code></td><td>80</td><td>drift guard 容忍像素：KF 投影點距 mask 邊界超過此值則移除 mask（觸發下幀 force re-register）</td></tr>
+      </tbody>
+    </table>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>運動預測模型：等速 Kalman Filter</h2>
+
+    <h3>模型選擇</h3>
+    <p>
+      步驟 02 採用<strong>等速度（Constant Velocity，CV）Kalman Filter</strong>。
+      在雷達幀率（通常 10–20 Hz）下，行人與車輛在相鄰幀之間的加速度可視為微小雜訊，
+      因此 CV 模型在精度與計算成本之間取得良好平衡。
+      實作位於 <code>src/utils/filter.py</code>，同時定義了 <code>Filter</code> Protocol
+      以供其他實作替換（Strategy Pattern）。
+    </p>
+
+    <h3>狀態向量與觀測向量</h3>
+    <table>
+      <thead>
+        <tr><th>向量</th><th>維度</th><th>內容</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>狀態 \(\mathbf{x}\)</td>
+          <td>4 × 1</td>
+          <td>\([x,\; y,\; v_x,\; v_y]^\top\) — 平面位置 + 速度，以自車座標系表示</td>
+        </tr>
+        <tr>
+          <td>觀測 \(\mathbf{z}'\)</td>
+          <td>3 × 1</td>
+          <td>
+            \([x,\; y,\; \dot{r}_j]^\top\) — Cluster 重心位置 + Doppler 徑向速度。
+            \(\dot{r}_j\) 為自車座標系下的 <em>apparent</em> 徑向速度，無需 ego 補償；
+            所有序列均啟用。
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>系統矩陣</h3>
+    <p>
+      狀態轉移矩陣 \(\mathbf{F}\) 描述等速運動：
+      位置每幀前進 \(v \cdot dt\)，速度保持不變。
+    </p>
+    \[
+      \mathbf{F} =
+      \begin{bmatrix} 1 & 0 & dt & 0 \\ 0 & 1 & 0 & dt \\ 0 & 0 & 1 & 0 \\ 0 & 0 & 0 & 1 \end{bmatrix},
+      \qquad
+      \mathbf{Q} = \operatorname{diag}(q\_var,\; q\_var\_lat,\; q\_var,\; q\_var\_lat)
+    \]
+    <p>
+      \(\mathbf{Q}\) 為<strong>非等向性</strong>對角陣：縱向（\(x, v_x\)）使用較大的
+      \(q\_var\)，橫向（\(y, v_y\)）使用較小的 \(q\_var\_lat\)。
+      這編碼了「物件主要沿縱向行駛」的先驗：橫向過程雜訊小，
+      使濾波器在無強烈量測證據時抵抗橫向漂移，\(v_y\) 亦因此保持接近零。
+      設 \(q\_var\_lat = q\_var\) 可退回等向性設定（向後相容）。
+    </p>
+    <p>
+      目前所有序列均使用增廣觀測矩陣 \(\mathbf{H}'\)（含 range rate）：
+    </p>
+    \[
+      \mathbf{H}' =
+      \begin{bmatrix} 1 & 0 & 0 & 0 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & \cos\theta_j & \sin\theta_j \end{bmatrix},
+      \qquad
+      \mathbf{R}' = \operatorname{diag}(r\_var,\; r\_var,\; r\_var\_vel)
+    \]
+    <p>
+      第三列 \([0,\; 0,\; \cos\theta_j,\; \sin\theta_j]\) 將速度狀態 \([v_x, v_y]\)
+      投影至預測位置的徑向方向（EKF 線性化）。
+      基本 2D 觀測矩陣 \(\mathbf{H}\) 作為 fallback 保留於程式碼中，目前未啟用。
+    </p>
+
+    <h3>遞推方程</h3>
+    <p>每幀分兩步執行，Correct 步驟依觀測維度選擇對應矩陣：</p>
+    <table>
+      <thead>
+        <tr><th>步驟</th><th>方程</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Predict</strong><br><code>predict()</code></td>
+          <td>
+            \(\hat{\mathbf{x}} = \mathbf{F}\mathbf{x}\)<br>
+            \(\mathbf{P} = \mathbf{F}\mathbf{P}\mathbf{F}^\top + \mathbf{Q}\)
+          </td>
+          <td>以上一幀估計值外推預測位置，協方差隨之增長</td>
+        </tr>
+        <tr>
+          <td><strong>Correct</strong><br><code>correct(z)</code></td>
+          <td>
+            \(\mathbf{S} = \tilde{\mathbf{H}}\mathbf{P}\tilde{\mathbf{H}}^\top + \tilde{\mathbf{R}}\)<br>
+            \(\mathbf{K} = \mathbf{P}\tilde{\mathbf{H}}^\top \mathbf{S}^{-1}\)<br>
+            \(\hat{\mathbf{x}} = \hat{\mathbf{x}} + \mathbf{K}(\mathbf{z} - \tilde{\mathbf{H}}\hat{\mathbf{x}})\)<br>
+            \(\mathbf{P} = (\mathbf{I} - \mathbf{K}\tilde{\mathbf{H}})\mathbf{P}\)
+          </td>
+          <td>
+            \(\tilde{\mathbf{H}}, \tilde{\mathbf{R}}\) 依觀測長度選擇：<br>
+            \(|\mathbf{z}|=2\) → 基本 \(\mathbf{H}, \mathbf{R}\)；<br>
+            \(|\mathbf{z}|=3\) → 增廣 \(\mathbf{H}', \mathbf{R}'\)（含 range rate）
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>初始條件</h3>
+    <p>
+      新建 Track 時，位置初始化為雷達偵測重心；速度沿徑向方向以 range rate 投影初始化：
+    </p>
+    <pre><code>θ_det = atan2(y_det, x_det)
+v₀    = ṙ · [cos θ_det, sin θ_det]   # 徑向分量；切線方向設為 0
+
+x₀ = [x_det, y_det, v₀ₓ, v₀ᵧ]
+P₀ = diag(p_var, p_var, 10·p_var, 10·p_var·(q_var_lat/q_var))</code></pre>
+    <p>
+      此先驗比零初始化更接近目標的實際徑向速度，有助縮短新 Track 的速度收斂時間。
+      切線速度仍設為零（單幀 range rate 僅提供徑向分量），
+      10 倍初始協方差反映此方向仍有較大不確定性。
+      \(v_y\) 的初始協方差再乘以 \(q\_var\_lat / q\_var\)，使橫向速度的初始不確定性
+      與過程雜訊成正比，避免初始幀量測把 \(v_y\) 拉偏後再難以回正。
+    </p>
+
+    <h3>RR 軟修正：rr_vel_gate</h3>
+    <p>
+      增廣觀測 \(\mathbf{z}' = [x, y, \dot{r}]^\top\) 在 cluster 點數稀少或量測條件不佳時，
+      \(\dot{r}\) 可能出現大幅雜訊跳變。若直接納入 <code>correct()</code>，
+      KF 速度狀態 \([v_x, v_y]\) 可能被拉向錯誤方向（例如因對向車輛的 rr 導致速度反向）。
+    </p>
+    <p>
+      <strong>軟修正機制</strong>：在每次 <code>correct()</code> 之前，
+      以 KF 全狀態 \([x, y, v_x, v_y]\) 計算預測的 range rate：
+    </p>
+    \[
+      \hat{\dot{r}} \;=\; \frac{v_x \hat{x} + v_y \hat{y}}{\|\hat{\mathbf{x}}[:2]\|_2}
+    \]
+    <p>
+      若 \(|\dot{r}_{\text{det}} - \hat{\dot{r}}| \leq \text{rr\_vel\_gate}\)，
+      使用增廣觀測 \([x, y, \dot{r}]\)；
+      否則退回位置觀測 \([x, y]\)，本幀不更新速度狀態，避免異常 Doppler 污染 KF。
+      設 <code>rr_vel_gate = 0</code> 停用此機制（永遠使用增廣觀測）。
+    </p>
+
+    <h3>稀疏 Cluster Spawn 閘門：rr_spawn_min_pts</h3>
+    <p>
+      新建 Track 時，<code>v₀ = (ṙ / r) · pos</code> 將 range rate 投影至徑向作為初始速度。
+      然而稀疏 cluster（點數極少）的 \(\dot{r}\) 易受量測雜訊主導，
+      導致初始速度方向或大小完全錯誤——Track 會在無後續 detection 的幀中快速漂移。
+    </p>
+    <p>
+      <strong>稀疏 Spawn 閘門</strong>：同時滿足以下兩個條件時，改以零速度初始化：
+    </p>
+    <ul>
+      <li><code>n_points &lt; rr_spawn_min_pts</code>（cluster 點數低於閾值）</li>
+      <li><code>|ṙ| &gt; rr_vel_gate</code>（rr 超出合理範圍）</li>
+    </ul>
+    <p>
+      兩條件缺一不可：點數少但 rr 合理（如靜止車輛 rr ≈ 0）仍信任 rr；
+      點數多則認為 Doppler 可靠，直接使用。
+      Detection 格式已擴充至 \(N \times 6\)，第 6 欄 \(n\_points\) 由
+      <code>build_detections()</code> 從 <code>cluster_points_dict</code> 計算。
+      設 <code>rr_spawn_min_pts = 0</code> 停用此機制。
+    </p>
+
+    <h3>可調參數（<code>filter</code> 區段）</h3>
+    <table>
+      <thead>
+        <tr><th>參數</th><th>預設值</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>q_var</code></td><td>100</td><td>縱向（x / vx）過程雜訊方差；控制 KF 預測在 x 方向的不確定性增長速率</td></tr>
+        <tr><td><code>q_var_lat</code></td><td>10</td><td>橫向（y / vy）過程雜訊方差；小於 <code>q_var</code> 時，濾波器抵抗橫向漂移並壓制 vy 增長。設為 <code>null</code> 或等於 <code>q_var</code> 退回等向性</td></tr>
+        <tr><td><code>r_var</code></td><td>300</td><td>量測雜訊方差（雷達 x / y 位置）</td></tr>
+        <tr><td><code>r_var_vel</code></td><td>5.0</td><td>增廣觀測的 range-rate 量測雜訊方差</td></tr>
+        <tr><td><code>p_var</code></td><td>100</td><td>初始狀態協方差對角值；速度方向初始不確定性為 10 × p_var（縱向）及 10 × p_var × q_var_lat/q_var（橫向）</td></tr>
+        <tr><td><code>dt</code></td><td>0.1</td><td>幀時間步長（秒），10 Hz 雷達 → 0.1 s</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Ego 資料</h3>
+    <p>
+      seq 3/4 提供 <code>ego_global_pos.txt</code>，但目前追蹤管道<strong>不使用 ego 資訊</strong>。
+      KF 速度狀態與 range rate 觀測 \(\dot{r}\) 均定義在自車座標系（radar frame），
+      兩者語義一致，無需 ego 速度介入。
+    </p>
+
+    <h3>對閘門的影響</h3>
+    <p>
+      步驟 03a 的 Mahalanobis 閘門使用由 <span class="math">H P H<sup>T</sup></span>
+      萃取的 2×2 位置協方差作為距離加權。
+      <code>correct()</code> 每次被呼叫後 <span class="math">P</span> 收縮；
+      若 Track 連續未配對，<span class="math">P</span> 持續增長，閘門範圍也隨之擴大。
+      為防止協方差無界增長導致閘門失效，<code>gate()</code> 另設
+      <code>max_euclidean</code> 硬閘門作為物理距離上限，兩層閘門共同保護配對品質。
+    </p>
+
+    <h3>Filter Protocol（策略模式）</h3>
+    <p>
+      <code>KalmanFilter</code> 實作 <code>Filter</code> Protocol，後者僅定義四個介面：
+      <code>predict()</code>、<code>correct(z)</code>、<code>.state</code>、<code>.covariance</code>。
+      <code>Tracker</code> 透過建構子注入的 <code>filter_factory</code> 建立每個 Track 的 Filter，
+      不直接耦合任何具體實作。
+      <code>IdentityFilter</code>（直接回傳量測值，無平滑）可作為基準線對照。
+    </p>
+    <pre><code>@runtime_checkable
+class Filter(Protocol):
+    def predict(self) -> None: ...
+    def correct(self, z: np.ndarray) -> None: ...
+    @property
+    def state(self) -> np.ndarray: ...       # [x, y]
+    @property
+    def covariance(self) -> np.ndarray: ...  # 2×2 位置協方差</code></pre>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>閘門篩選（Gating）— 步驟 03a</h2>
+
+    <h3>設計動機</h3>
+    <p>
+      在進入 Hungarian 分配之前，先以閘門排除不可能的 (track, detection) pair，
+      可大幅縮小代價矩陣並防止遠距誤配。
+      本實作採用<strong>雙層閘門</strong>，兩個條件均須成立才能進入 <code>valid_pairs</code>。
+    </p>
+
+    <h3>第一層：歐式距離硬閘門</h3>
+    <p>
+      以物理可行性為依據，無論協方差大小，超過距離上限的 pair 一律拒絕：
+    </p>
+    \[
+      \|\mathbf{d}_j - \hat{\mathbf{x}}_i\|_2 \;\leq\; \delta_{\text{euc}}
+    \]
+    <p>
+      其中 \(\mathbf{d}_j \in \mathbb{R}^2\) 為偵測 \(j\) 的位置，
+      \(\hat{\mathbf{x}}_i \in \mathbb{R}^2\) 為 Track \(i\) 的預測位置（\(\mathbf{H}\mathbf{x}\)），
+      \(\delta_{\text{euc}}\) 為可調超參數（<code>max_euclidean</code>）。
+    </p>
+
+    <h3>第二層：Mahalanobis 距離軟閘門</h3>
+    <p>
+      以 KF 預測協方差作為距離加權，等效於在「預測不確定性的橢圓」上設定統計信賴區間：
+    </p>
+    \[
+      d_M(\mathbf{d}_j,\, \hat{\mathbf{x}}_i)
+      \;=\;
+      \sqrt{
+        (\mathbf{d}_j - \hat{\mathbf{x}}_i)^\top
+        \,\boldsymbol{\Sigma}_i^{-1}\,
+        (\mathbf{d}_j - \hat{\mathbf{x}}_i)
+      }
+      \;\leq\; \delta_M
+    \]
+    <p>
+      協方差矩陣 \(\boldsymbol{\Sigma}_i\) 由 KF 的全狀態協方差 \(P_i\) 投影至位置子空間：
+    </p>
+    \[
+      \boldsymbol{\Sigma}_i \;=\; \mathbf{H}\, P_i\, \mathbf{H}^\top \;\in\; \mathbb{R}^{2 \times 2}
+    \]
+    <p>
+      \(\delta_M\) 為軟閘門閾值（<code>max_distance</code>）。
+      當 Track 長期未配對時 \(P_i\) 增長、\(\boldsymbol{\Sigma}_i^{-1}\) 縮小，
+      導致 \(d_M\) 對遠距偵測趨近於零——此即需要硬閘門作為第一防線的原因。
+    </p>
+
+    <h3>篩選邏輯</h3>
+    <pre><code>valid_pairs = set()
+for i, (x̂ᵢ, Pᵢ) in enumerate(zip(predicted_positions, predicted_covs)):
+    Σ_inv = inv(H @ Pᵢ @ Hᵀ)
+    for j, dⱼ in enumerate(detection_positions):
+        if ‖dⱼ − x̂ᵢ‖₂ > δ_euc:          # 第一層：硬閘門
+            continue
+        if d_M(dⱼ, x̂ᵢ, Σ_inv) <= δ_M:   # 第二層：軟閘門
+            valid_pairs.add((i, j))</code></pre>
+
+    <table>
+      <thead>
+        <tr><th>參數</th><th>符號</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>max_euclidean</code></td>
+          <td>\(\delta_{\text{euc}}\)</td>
+          <td>物理距離上限（公尺）；防止協方差爆炸後閘門失效</td>
+        </tr>
+        <tr>
+          <td><code>max_distance</code></td>
+          <td>\(\delta_M\)</td>
+          <td>Mahalanobis 距離閾值；以協方差加權，反映追蹤不確定性</td>
+        </tr>
+        <tr>
+          <td><code>rr_vel_gate</code></td>
+          <td>—</td>
+          <td>
+            RR 軟修正閾值（m/s）：若 \(|\dot{r}_{\text{det}} - \hat{\dot{r}}| &gt; \text{rr\_vel\_gate}\)，
+            <code>correct()</code> 僅使用位置觀測 \([x, y]\)，不更新速度狀態；
+            0 = 停用（永遠使用增廣觀測）
+          </td>
+        </tr>
+        <tr>
+          <td><code>rr_spawn_min_pts</code></td>
+          <td>—</td>
+          <td>
+            稀疏 Spawn 閘門：cluster 點數 &lt; 此值
+            <strong>且</strong> \(|\dot{r}| &gt; \text{rr\_vel\_gate}\) 時，
+            新建 Track 以零速度初始化，避免雜訊 rr 導致初始漂移；
+            0 = 停用（永遠使用 rr 投影）
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>代價函數（Cost Function）— 步驟 03b</h2>
+
+    <h3>整體結構</h3>
+    <p>
+      對所有 \((i, j) \in \texttt{valid\_pairs}\)，代價由三項相加組成：
+    </p>
+    \[
+      c(i, j)
+      \;=\;
+      \underbrace{
+        d_M(\mathbf{d}_j,\, \hat{\mathbf{x}}_i)
+      }_{\text{位置項 } c_{\text{pos}}}
+      \;+\;
+      \underbrace{
+        \frac{\bigl|\dot{r}_j - \dot{r}_i\bigr|}{\sigma_{rr}}
+      }_{\text{Range Rate 項 } c_{rr}}
+      \;+\;
+      \underbrace{
+        \bigl|y_j - \hat{y}_i\bigr| \cdot w_y
+      }_{\text{橫向項 } c_y}
+    \]
+    <p>
+      未進入 <code>valid_pairs</code> 的 pair 代價設為 \(\infty\)，不參與分配。
+    </p>
+
+    <h3>位置項</h3>
+    <p>
+      直接複用閘門計算的 Mahalanobis 距離。以協方差加權的好處是：
+      預測不確定性越大的 Track，其對位置差異的容忍度也越高，
+      不會因 KF 誤差懲罰置信度本就較低的配對。
+    </p>
+    \[
+      c_{\text{pos}}(i, j)
+      \;=\;
+      \sqrt{
+        (\mathbf{d}_j - \hat{\mathbf{x}}_i)^\top
+        \,\boldsymbol{\Sigma}_i^{-1}\,
+        (\mathbf{d}_j - \hat{\mathbf{x}}_i)
+      }
+    \]
+
+    <h3>Range Rate 項</h3>
+    <p>
+      4D 雷達直接量測每個點的<strong>徑向速度（Range Rate）</strong>，
+      即沿雷達視線方向的都卜勒速度 \(\dot{r}\)（m/s）。
+      當兩個 Cluster 位置接近但速度不同時，此項可有效阻止 ID-Switch：
+    </p>
+    \[
+      c_{rr}(i, j)
+      \;=\;
+      \frac{\bigl|\dot{r}_j - \dot{r}_i\bigr|}{\sigma_{rr}}
+    \]
+    <p>
+      其中 \(\dot{r}_j\) 為偵測 \(j\) 的 range rate（<code>detections[:, 4]</code>），
+      \(\dot{r}_i\) 為 Track \(i\) 上次配對時記錄的 range rate（<code>track.det[4]</code>），
+      \(\sigma_{rr}\) 為正規化常數（<code>range_rate_sigma</code>，單位 m/s）。
+    </p>
+    <div class="callout">
+      直覺上，\(\sigma_{rr}\) 代表「允許的 range rate 誤差」。
+      例如 \(\sigma_{rr} = 2\) 時，兩物體 range rate 相差 4 m/s 便額外增加代價 2.0，
+      足以在位置接近的情況下主導 Hungarian 的決策。
+    </div>
+
+    <h3>橫向項（y_cost_weight）</h3>
+    <p>
+      \(c_y\) 為獨立於 KF 協方差的固定橫向代價：
+    </p>
+    \[
+      c_y(i, j) \;=\; \bigl|y_j - \hat{y}_i\bigr| \cdot w_y
+    \]
+    <p>
+      其中 \(y_j\) 為偵測 \(j\) 的橫向座標，\(\hat{y}_i\) 為 Track \(i\) 的預測橫向位置，
+      \(w_y\) 為可調的每公尺懲罰係數（<code>y_cost_weight</code>）。
+    </p>
+    <p>
+      設計動機：Mahalanobis 位置項以 \(\boldsymbol{\Sigma}_i^{-1}\) 加權。
+      當 Track 連續未配對時 \(\mathbf{P}_i\) 膨脹，\(\boldsymbol{\Sigma}_i^{-1}\) 縮小，
+      導致位置項對同等橫向偏差的懲罰隨之減弱——此時 Hungarian 可能將橫向位置相差數公尺的
+      對向車輛 cluster 錯誤指派給前向 Track。
+      \(c_y\) 以固定係數繞過協方差加權，確保橫向分離度在所有 Track 老化程度下均得到懲罰。
+    </p>
+    <div class="callout">
+      \(c_y\) 屬於啟發式補強，而非嚴格 Bayes 最優。建議僅在有位置鄰近但方向相反的物件
+      （如對向車道）導致 ID-Switch 的場景中啟用（<code>y_cost_weight &gt; 0</code>）；
+      設為 0 則完全退回以 Mahalanobis 為主的位置項。
+    </div>
+
+    <h3>匈牙利分配</h3>
+    <p>
+      在 \(M \times N\) 代價矩陣上求全域最優一對一分配：
+    </p>
+    \[
+      \mathcal{A}^*
+      \;=\;
+      \arg\min_{\mathcal{A}}\;
+      \sum_{(i,\,j)\,\in\,\mathcal{A}} c(i, j)
+      \quad \text{s.t.} \quad
+      \text{每個 } i,\, j \text{ 至多出現一次}
+    \]
+    <p>
+      <code>scipy.optimize.linear_sum_assignment</code> 不支援 \(\infty\)；
+      實作上以哨兵值 \(10^9\) 替換，分配後再拒絕原值為 \(\infty\) 的 pair，
+      確保閘門外的 pair 不會被強制指派。
+    </p>
+
+    <table>
+      <thead>
+        <tr><th>參數</th><th>符號</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>range_rate_sigma</code></td>
+          <td>\(\sigma_{rr}\)</td>
+          <td>Range Rate 正規化常數（m/s）；值越小，速度不一致的懲罰越重</td>
+        </tr>
+        <tr>
+          <td><code>y_cost_weight</code></td>
+          <td>\(w_y\)</td>
+          <td>橫向（y）固定懲罰係數（代價/公尺）；0 = 停用，退回純 Mahalanobis 位置項</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>Range Rate 速度觀測：推導與實作說明</h2>
+
+    <h3>動機</h3>
+    <p>
+      基本 KF 只觀測位置 \([x, y]\)，速度分量 \([v_x, v_y]\) 完全靠位置差異反推，
+      新建 Track 在前幾幀的速度估計幾乎無意義。
+      4D 雷達直接提供 range rate \(\dot{r}\)（相對徑向速度，自車座標系），
+      可作為速度的額外徑向觀測——且因 KF 速度狀態本身即定義在自車座標系，
+      兩端語義一致，無需 ego 速度介入。
+      本功能已實作於 <code>src/utils/filter.py</code>、<code>src/sdc_tracker.py</code>，
+      所有序列均啟用。
+    </p>
+
+    <h3>推導：Range Rate 在自車座標系的觀測模型</h3>
+    <p>
+      雷達量測的 range rate \(\dot{r}\) 定義為物體相對雷達（ego）的接近速度——
+      即 <em>apparent</em> 速度在徑向的投影：
+    </p>
+    \[
+      \dot{r} \;=\; (\mathbf{v}_{\text{obj}} - \mathbf{v}_{\text{ego}}) \cdot \hat{\mathbf{r}}
+               \;=\; \mathbf{v}_{\text{apparent}} \cdot \hat{\mathbf{r}}
+    \]
+    <p>
+      KF 狀態向量中的速度分量 \([v_x, v_y]\) 定義在自車座標系（radar frame），
+      因此 \([v_x, v_y] = \mathbf{v}_{\text{apparent}}\)。
+      設偵測點方位角 \(\theta_j = \operatorname{atan2}(y_j, x_j)\)，則：
+    </p>
+    \[
+      \dot{r} \;=\; v_x \cos\theta_j \;+\; v_y \sin\theta_j
+    \]
+    <p>
+      這是 KF 狀態的<strong>線性函數</strong>，可直接納入標準線性 KF 無需 EKF，
+      也<strong>不需要 ego 速度</strong>——兩端均在自車座標系下，語義一致。
+    </p>
+
+    <h3>增廣觀測模型</h3>
+    <p>
+      原有觀測 \(\mathbf{z} = [x, y]^\top\)，\(\mathbf{H}_{2\times4}\)。
+      增廣後加入 raw Doppler 量測作為第三列：
+    </p>
+    \[
+      \mathbf{z}' = \begin{bmatrix} x_j \\ y_j \\ \dot{r}_j \end{bmatrix},
+      \qquad
+      \mathbf{H}' = \begin{bmatrix} 1 & 0 & 0 & 0 \\ 0 & 1 & 0 & 0 \\ 0 & 0 & \cos\theta_j & \sin\theta_j \end{bmatrix}
+    \]
+    <p>
+      量測雜訊協方差 \(\mathbf{R}'\) 相應擴充為 \(3 \times 3\)，
+      第三對角元素對應 range rate 量測雜訊（<code>r_var_vel</code>）。
+    </p>
+
+    <h3>可觀測性分析</h3>
+    <p>
+      單一幀的 \(v_r\) 觀測將速度限制在速度空間中的一條直線（法向量為 \(\hat{\mathbf{r}}_j\)）。
+      切線方向的速度 \(v_t = -v_x \sin\theta_j + v_y \cos\theta_j\) 仍不可觀。
+      然而隨物體相對雷達移動，\(\theta_j\) 跨幀變化，多幀後速度完全可觀：
+    </p>
+    \[
+      \begin{bmatrix} v_r^{(1)} \\ v_r^{(2)} \end{bmatrix}
+      =
+      \begin{bmatrix} \cos\theta^{(1)} & \sin\theta^{(1)} \\ \cos\theta^{(2)} & \sin\theta^{(2)} \end{bmatrix}
+      \begin{bmatrix} v_x \\ v_y \end{bmatrix}
+      \quad \text{（在 } \theta^{(1)} \neq \theta^{(2)} \text{ 時滿秩）}
+    \]
+
+    <h3>主要效益</h3>
+    <table>
+      <thead>
+        <tr><th>問題</th><th>未使用 range rate</th><th>增廣後</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>新建 Track 冷啟動</td>
+          <td>速度估為零，前幾幀預測偏差大</td>
+          <td>第一幀即有徑向速度資訊，收斂加快</td>
+        </tr>
+        <tr>
+          <td>速度觀測一致性</td>
+          <td>僅靠位置差估計速度；新 Track 切線速度完全未知</td>
+          <td>\(\dot{r}\) 直接觀測 apparent 徑向速度，與 KF 速度狀態語義一致，無需 ego 補償</td>
+        </tr>
+        <tr>
+          <td>對 seq 3/4 的影響</td>
+          <td>自車行駛時新 Track 初期速度完全靠位置差推算，收斂慢</td>
+          <td>\(\dot{r}\) 第一幀即提供徑向速度資訊；切線速度仍靠位置差，但 2D 速度不確定性大幅降低</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>限制與前提條件</h3>
+    <ul>
+      <li>
+        <strong>不需要 ego 速度</strong>：KF 速度狀態和 \(\dot{r}\) 均定義在自車座標系，
+        語義一致，無需外部 ego 速度輸入。
+        seq 1/2（靜止 ego）和 seq 3/4（移動 ego）使用完全相同的增廣觀測公式。
+      </li>
+      <li>
+        <strong>\(\mathbf{H}'\) 隨幀更新（EKF 線性化）</strong>：\(\cos\theta_j\)、\(\sin\theta_j\) 以
+        <code>correct()</code> 時 KF 的<em>預測</em>位置 \(\hat{\mathbf{x}}[:2]\) 計算，
+        而非量測位置 \(\mathbf{z}[:2]\)，此為標準 EKF 線性化做法，可避免 r̂ 方向因量測雜訊偏移。
+      </li>
+      <li>
+        <strong>切線速度仍不可直接觀測</strong>：對純橫向運動物體（\(\theta \approx \pm 90°\)），
+        \(\cos\theta \approx 0\)，\(v_r\) 幾乎不含 \(v_x\) 資訊，此方向仍靠位置差推算。
+      </li>
+      <li>
+        <strong>Cost Function 的參考基準一致性</strong>：
+        \(c_{rr}\) 比較時兩側必須使用相同基準。偵測與 Track 均使用原始 \(\dot{r}\)（自車座標系），
+        不混用任何 ego 補償後的數值。
+      </li>
+    </ul>
+
+    <!-- ═══════════════════════════════════════════════════════════ -->
+    <h2>評估指標：點級 MOTA Proxy</h2>
+    <p>
+      評估腳本位於 <code>src/evaluate_tracking.py</code>，實作了一個以
+      <strong>雷達點（point）</strong>為計算單位的 MOTA 代理指標，
+      而非標準 MOTA 以物件（object）為單位的版本。
+    </p>
+
+    <h3>CSV 資料格式</h3>
+    <p>
+      GT 與預測結果均以同一格式的 CSV 表示。每個幀對應一列，<code>mask</code>
+      欄位為空白分隔的整數序列，長度等於該幀的雷達點數：
+    </p>
+    <table>
+      <thead>
+        <tr><th>值</th><th>語意</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>\(\geq 0\)</td><td>該點屬於某移動物件，值為物件（GT）或 Track（pred）的 ID</td></tr>
+        <tr><td>\(< 0\)</td><td>該點為背景或靜態點，不屬於任何追蹤目標</td></tr>
+      </tbody>
+    </table>
+
+    <h3>逐幀統計量定義</h3>
+    <p>
+      設第 \(t\) 幀共有 \(N_t\) 個雷達點，GT 標籤為
+      \(\mathbf{g}^{(t)} \in \mathbb{Z}^{N_t}\)，預測標籤為
+      \(\mathbf{p}^{(t)} \in \mathbb{Z}^{N_t}\)。
+      定義布林向量：
+    </p>
+    \[
+      g^+_k = \bigl[\mathbf{g}^{(t)}_k \geq 0\bigr], \qquad
+      p^+_k = \bigl[\mathbf{p}^{(t)}_k \geq 0\bigr]
+    \]
+    <p>各計數量定義如下：</p>
+    <table>
+      <thead>
+        <tr><th>符號</th><th>定義</th><th>語意</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>\(\text{GT}^+\)</td>
+          <td>\(\displaystyle\sum_{t,k} g^+_k\)</td>
+          <td>所有幀中屬於移動物件的雷達點總數（分母）</td>
+        </tr>
+        <tr>
+          <td>\(\text{FP}\)</td>
+          <td>\(\displaystyle\sum_{t,k} \bigl(\lnot g^+_k \;\wedge\; p^+_k\bigr)\)</td>
+          <td>GT 為背景但預測為追蹤目標的點數（誤報）</td>
+        </tr>
+        <tr>
+          <td>\(\text{FN}\)</td>
+          <td>\(\displaystyle\sum_{t,k} \bigl(g^+_k \;\wedge\; \lnot p^+_k\bigr)\)</td>
+          <td>GT 為移動物件但預測未追蹤的點數（漏報）</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Fragmentation Proxy</h3>
+    <p>
+      對每個 GT 物件 \(u\)，若上一幀它沒有被任何預測點覆蓋（追蹤中斷），
+      而本幀又重新出現有效預測，則計入一次軌跡碎裂：
+    </p>
+    \[
+      \text{Frag}
+      \;=\;
+      \sum_{t}\sum_{u}
+      \mathbf{1}\!\left[
+        \hat{p}^{(t)}_u \text{ 存在}
+        \;\wedge\;
+        \hat{p}^{(t-1)}_u \text{ 不存在}
+        \;\wedge\;
+        u \text{ 曾被追蹤過}
+      \right]
+    \]
+    <p>
+      「不存在」代表該幀內 GT 物件 \(u\) 的所有點均無對應的正例預測（\(p^+_k = 0\)）。
+      Fragmentation 反映追蹤的<strong>連續性</strong>——值越高，表示 Track 頻繁中斷再重連。
+      此指標<strong>不計入 MOTA_proxy 公式</strong>，僅作為輔助診斷欄位輸出。
+    </p>
+
+    <h3>ID-Switch Proxy 計算</h3>
+    <p>
+      對每個 GT 物件 ID \(u\)，在每幀中找出落在其點集合上的<strong>眾數預測 ID</strong>：
+    </p>
+    \[
+      \hat{p}^{(t)}_u
+      \;=\;
+      \operatorname*{argmax}_{v}\;
+      \bigl|\bigl\{k : \mathbf{g}^{(t)}_k = u,\; \mathbf{p}^{(t)}_k = v,\; v \geq 0\bigr\}\bigr|
+    \]
+    <p>
+      若相鄰兩幀中同一 GT 物件的眾數預測 ID 發生改變，則計入一次 ID-Switch：
+    </p>
+    \[
+      \text{IDSW} \;=\;
+      \sum_{t}\sum_{u}
+      \mathbf{1}\!\left[
+        \hat{p}^{(t)}_u \neq \hat{p}^{(t-1)}_u
+        \;\wedge\;
+        \hat{p}^{(t)}_u \text{ 存在}
+        \;\wedge\;
+        \hat{p}^{(t-1)}_u \text{ 存在}
+      \right]
+    \]
+
+    <h3>MOTA Proxy 公式</h3>
+    \[
+      \boxed{
+        \text{MOTA\_proxy}
+        \;=\;
+        1 \;-\;
+        \frac{\text{FP} + \text{FN} + \text{IDSW}}
+             {\max\!\left(\text{GT}^+,\, 1\right)}
+      }
+    \]
+    <p>
+      與標準 MOTA 的公式形式相同，但計算單位由物件改為雷達點，
+      因此其數值不可直接與 nuScenes / MOTChallenge 的 MOTA 比較。
+    </p>
+
+    <h3>與標準 MOTA 的差異</h3>
+    <table>
+      <thead>
+        <tr><th>面向</th><th>標準 MOTA（物件級）</th><th>本專案（點級 proxy）</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>FP / FN 單位</td>
+          <td>每幀未匹配的物件數</td>
+          <td>每幀標籤錯誤的雷達點數</td>
+        </tr>
+        <tr>
+          <td>ID-Switch 判定</td>
+          <td>物件與 Track 的一對一匹配（IoU 或距離門限）</td>
+          <td>GT 物件點集上的眾數 pred ID 是否改變</td>
+        </tr>
+        <tr>
+          <td>分母</td>
+          <td>GT 物件出現次數總和</td>
+          <td>GT 正例點數總和</td>
+        </tr>
+        <tr>
+          <td>Fragmentation</td>
+          <td>軌跡中斷後重新匹配的次數（物件級）</td>
+          <td>同左，但判定依據為點集有無正例預測（不計入 MOTA 公式）</td>
+        </tr>
+        <tr>
+          <td>數值範圍</td>
+          <td>\((-\infty,\, 1]\)（可為負）</td>
+          <td>同上</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      <strong>優化方向：</strong>由於 FP、FN 以點數計，
+      減少「將靜態背景點標記為移動目標」（降 FP）和「漏追蹤移動物件的點」（降 FN）
+      是提升 MOTA_proxy 最直接的方向。IDSW 項對分母的貢獻通常遠小於 FP + FN，
+      但在物件密集、位置接近的場景中仍不可忽視。
+    </div>
+  </main>
+</body>
+</html>

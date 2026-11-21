@@ -1,0 +1,2 @@
+- 競賽簡報連結: https://docs.google.com/presentation/d/16hAwszGAn12sg5pFYa2eGxAESh0URFDJbR5BzyLq3d0
+- Hackmd 連結: https://hackmd.io/@gantingyu/Bk5be-cJfl

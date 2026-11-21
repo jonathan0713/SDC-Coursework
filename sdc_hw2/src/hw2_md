@@ -1,0 +1,504 @@
+
+
+## Task1
+```bash
+jonathan@Jonat:~/Documents/ROS1/sdc_hw2$ docker compose attach ros1_dev 
+root@Jonat:/ros_ws# rosbag info /ros_ws/data/sdc_hw2/guanfu_road_clipped.bag
+path:        /ros_ws/data/sdc_hw2/guanfu_road_clipped.bag
+version:     2.0
+duration:    60.0s
+start:       Sep 25 2024 03:14:50.00 (1727234090.00)
+end:         Sep 25 2024 03:15:49.00 (1727234150.00)
+size:        7.6 GB
+messages:    249147
+compression: none [7501/7501 chunks]
+types:       can_msgs/Frame                           [64ae5cebf967dc6aae4e78f5683a5b25]
+             dbw_pacifica_msgs/AcceleratorPedalCmd    [a1a82e02e150ecb7c85bb191a9e67d46]
+             dbw_pacifica_msgs/AcceleratorPedalReport [79e5f58f94a8fa77ed7d602d29d0230c]
+             dbw_pacifica_msgs/ActuatorsReport        [d66d15b164e1cf2d467650778182b722]
+             dbw_pacifica_msgs/BrakeCmd               [df5046f02deb0972bd5ea27261595bc6]
+             dbw_pacifica_msgs/BrakeReport            [c23e437775db686330778b5ba5b0b41b]
+             dbw_pacifica_msgs/DriverInputReport      [7d92e8189302532750bc994bbf345e99]
+             dbw_pacifica_msgs/GearCmd                [0e1ada801a24754a8b6ec38e04e82ab5]
+             dbw_pacifica_msgs/GearReport             [82edf69509597cc6f96e7ba84e5d0077]
+             dbw_pacifica_msgs/GlobalEnableCmd        [6bed8b1974abe40f81a2b6c9d5a493f6]
+             dbw_pacifica_msgs/LowVoltageSystemReport [c352ea40227e6ba399244c0eeed0064c]
+             dbw_pacifica_msgs/MiscCmd                [c5a8f076a15a9659536c514cdcd82275]
+             dbw_pacifica_msgs/MiscReport             [07d2b659403a0cbd241b5457fee2e270]
+             dbw_pacifica_msgs/Steering2Report        [009145df632b20263fd61a2cbd47cc87]
+             dbw_pacifica_msgs/SteeringCmd            [01afefccdc79bc13944f883510af8807]
+             dbw_pacifica_msgs/SteeringReport         [3d804816a4b20624da24c6e1d360c70b]
+             dbw_pacifica_msgs/SurroundReport         [7fb6baa192c10e400b9071053bd9c683]
+             dbw_pacifica_msgs/TirePressureReport     [a2c91f746e5d8bec139c834f92ac7468]
+             dbw_pacifica_msgs/WheelPositionReport    [dcdb40156270607476a632a433cc6d45]
+             dbw_pacifica_msgs/WheelSpeedReport       [7f27720c7c80e612329b2205902e5bba]
+             diagnostic_msgs/DiagnosticArray          [60810da900de1dd6ddd437c3503511da]
+             geometry_msgs/PoseStamped                [d3812c3cbc69362b77dc0b19b345f8f5]
+             geometry_msgs/Vector3Stamped             [7b324c7325e683bf02a9b14b01090ec7]
+             itri_msgs/CarState                       [e29dfa68c85fb4e233bbfc19ecfc0749]
+             itri_msgs/DetectedObjectArray            [276d607237a4270f49c5de8f71694bfa]
+             itri_msgs/NdtStatistics                  [b21481a49aaae81584b34de5ce8cef65]
+             itri_msgs/PredictState                   [72d0803d1465f548e6ee4eb9d0ba77d3]
+             itri_msgs/ProgramOutput                  [a0307b07c162469a5f8993c1679034b8]
+             itri_msgs/VehicleState                   [356941fd514ebcd703629e85894a6315]
+             jsk_recognition_msgs/PolygonArray        [709b37d39871cfdbbfbd5c41cf9bc2be]
+             nmea_msgs/Sentence                       [9f221efc5f4b3bac7ce4af102b32308b]
+             sensor_msgs/CompressedImage              [8f7a12909da2c9d3332d540a0977563f]
+             sensor_msgs/Image                        [060021388200f6f0f447d0fcd9c64743]
+             sensor_msgs/Imu                          [6a62c6daae103f4ff57a132d6f95cec2]
+             sensor_msgs/NavSatFix                    [2d3a8cd499b9b4a0249fb98fd05cfa48]
+             sensor_msgs/PointCloud2                  [1158d486dd51d683ce2f1be655c3c181]
+             sensor_msgs/TimeReference                [fded64a0265108ba86c3d38fb11c0c16]
+             std_msgs/String                          [992ce8a1687cec8c8bd883ec73ca41d1]
+             std_msgs/UInt16MultiArray                [52f264f1c973c4b73790d384c6cb4484]
+             tf2_msgs/TFMessage                       [94810edda583a504dfda3829e70d7eec]
+topics:      /Navtech/Polar                                    240 msgs    : sensor_msgs/Image                       
+             /accelerator_pedal_cmd                           2400 msgs    : dbw_pacifica_msgs/AcceleratorPedalCmd   
+             /accelerator_pedal_report                        6000 msgs    : dbw_pacifica_msgs/AcceleratorPedalReport
+             /actuator_report                                  600 msgs    : dbw_pacifica_msgs/ActuatorsReport       
+             /actuators_cmd                                   2400 msgs    : dbw_pacifica_msgs/MiscCmd               
+             /ars548/radar_front/detections                   1196 msgs    : sensor_msgs/PointCloud2                 
+             /ars548/radar_front/objects                      1196 msgs    : sensor_msgs/PointCloud2                 
+             /ars548/radar_rear/detections                    1198 msgs    : sensor_msgs/PointCloud2                 
+             /ars548/radar_rear/objects                       1197 msgs    : sensor_msgs/PointCloud2                 
+             /black_panther_iostat/output                       54 msgs    : itri_msgs/ProgramOutput                 
+             /black_panther_iotop/output                        60 msgs    : itri_msgs/ProgramOutput                 
+             /black_panther_meminfo/output                      60 msgs    : itri_msgs/ProgramOutput                 
+             /black_panther_nvidia_smi/output                   60 msgs    : itri_msgs/ProgramOutput                 
+             /black_panther_ps/output                           30 msgs    : itri_msgs/ProgramOutput                 
+             /black_panther_top/output                          30 msgs    : itri_msgs/ProgramOutput                 
+             /brake_cmd                                       2400 msgs    : dbw_pacifica_msgs/BrakeCmd              
+             /brake_report                                    6000 msgs    : dbw_pacifica_msgs/BrakeReport           
+             /car_state                                       6000 msgs    : itri_msgs/CarState                      
+             /compensate_point                                 600 msgs    : sensor_msgs/PointCloud2                 
+             /driver_input_report                              600 msgs    : dbw_pacifica_msgs/DriverInputReport     
+             /filter/velocity                                  600 msgs    : geometry_msgs/Vector3Stamped            
+             /filtered_cluster_hulls                           600 msgs    : jsk_recognition_msgs/PolygonArray       
+             /filtered_cluster_hulls_F                         600 msgs    : jsk_recognition_msgs/PolygonArray       
+             /filtered_cluster_hulls_L                         600 msgs    : jsk_recognition_msgs/PolygonArray       
+             /filtered_cluster_hulls_R                         600 msgs    : jsk_recognition_msgs/PolygonArray       
+             /fix_vs330                                        600 msgs    : sensor_msgs/NavSatFix                   
+             /front_cluster_hulls                              600 msgs    : jsk_recognition_msgs/PolygonArray       
+             /front_detection_objects                          600 msgs    : itri_msgs/DetectedObjectArray           
+             /front_detection_points                           600 msgs    : sensor_msgs/PointCloud2                 
+             /front_lidar_objects                              600 msgs    : itri_msgs/DetectedObjectArray           
+             /front_lidar_objects_raw                          600 msgs    : itri_msgs/DetectedObjectArray           
+             /front_lidar_points                               600 msgs    : sensor_msgs/PointCloud2                 
+             /gear_cmd                                        2400 msgs    : dbw_pacifica_msgs/GearCmd               
+             /gear_report                                      600 msgs    : dbw_pacifica_msgs/GearReport            
+             /global_enable_cmd                               2400 msgs    : dbw_pacifica_msgs/GlobalEnableCmd       
+             /gnss                                             240 msgs    : sensor_msgs/NavSatFix                   
+             /imu/data                                        6000 msgs    : sensor_msgs/Imu                         
+             /imu/time_ref                                    6480 msgs    : sensor_msgs/TimeReference               
+             /innovusion/fk/txyzi                              600 msgs    : sensor_msgs/PointCloud2                 
+             /left_cluster_hulls                               600 msgs    : jsk_recognition_msgs/PolygonArray       
+             /left_detection_objects                           600 msgs    : itri_msgs/DetectedObjectArray           
+             /left_detection_points                            600 msgs    : sensor_msgs/PointCloud2                 
+             /left_lidar_objects                               600 msgs    : itri_msgs/DetectedObjectArray           
+             /left_lidar_objects_raw                           600 msgs    : itri_msgs/DetectedObjectArray           
+             /left_lidar_points                                600 msgs    : sensor_msgs/PointCloud2                 
+             /local_pose                                      6000 msgs    : geometry_msgs/PoseStamped               
+             /localizer_node/gnss_pose                         240 msgs    : geometry_msgs/PoseStamped               
+             /localizer_node/log                              4440 msgs    : std_msgs/String                         
+             /localizer_node/ndt_pose                          600 msgs    : geometry_msgs/PoseStamped               
+             /localizer_node/ndt_stat                          600 msgs    : itri_msgs/NdtStatistics                 
+             /localizer_node/pred_stat                        6000 msgs    : itri_msgs/PredictState                  
+             /localizer_node/predict_pose                     6000 msgs    : geometry_msgs/PoseStamped               
+             /low_voltage_system_report                        600 msgs    : dbw_pacifica_msgs/LowVoltageSystemReport
+             /lucid_cameras_x00/gige_100_b_hdr/compressed     1668 msgs    : sensor_msgs/CompressedImage             
+             /lucid_cameras_x00/gige_100_f_hdr/compressed     1667 msgs    : sensor_msgs/CompressedImage             
+             /lucid_cameras_x00/gige_30_f_hdr/compressed      1668 msgs    : sensor_msgs/CompressedImage             
+             /lucid_cameras_x00/gige_60_f_hdr/compressed      1667 msgs    : sensor_msgs/CompressedImage             
+             /lucid_cameras_x01/gige_100_fl_hdr/compressed    1667 msgs    : sensor_msgs/CompressedImage             
+             /lucid_cameras_x01/gige_100_fr_hdr/compressed    1667 msgs    : sensor_msgs/CompressedImage             
+             /lucid_cameras_x01/gige_60_bl/compressed         2119 msgs    : sensor_msgs/CompressedImage             
+             /lucid_cameras_x01/gige_60_br/compressed         2120 msgs    : sensor_msgs/CompressedImage             
+             /misc_report                                     6000 msgs    : dbw_pacifica_msgs/MiscReport            
+             /monitor/cpu_usage                                 28 msgs    : std_msgs/UInt16MultiArray               
+             /monitor/gpu_usage                                 57 msgs    : std_msgs/UInt16MultiArray               
+             /monitor/major_system                             600 msgs    : diagnostic_msgs/DiagnosticArray         
+             /monitor/major_topics                              58 msgs    : diagnostic_msgs/DiagnosticArray         
+             /monitor/minor_system                             600 msgs    : diagnostic_msgs/DiagnosticArray         
+             /monitor/minor_topics                              57 msgs    : diagnostic_msgs/DiagnosticArray         
+             /nmea_sentence                                   1800 msgs    : nmea_msgs/Sentence                      
+             /no_ground_front                                  600 msgs    : sensor_msgs/PointCloud2                 
+             /no_ground_left                                   600 msgs    : sensor_msgs/PointCloud2                 
+             /no_ground_right                                  600 msgs    : sensor_msgs/PointCloud2                 
+             /no_ground_top                                    600 msgs    : sensor_msgs/PointCloud2                 
+             /ouster/back_991939001246                         600 msgs    : sensor_msgs/PointCloud2                 
+             /ouster/back_991939001246/imu                    6000 msgs    : sensor_msgs/Imu                         
+             /ouster/front_991923000849                        600 msgs    : sensor_msgs/PointCloud2                 
+             /ouster/front_991923000849/imu                   5999 msgs    : sensor_msgs/Imu                         
+             /ouster/top_122219002200                          600 msgs    : sensor_msgs/PointCloud2                 
+             /ouster/top_122219002200/imu                     6000 msgs    : sensor_msgs/Imu                         
+             /received_dbw_messages                          48994 msgs    : can_msgs/Frame                          
+             /right_cluster_hulls                              600 msgs    : jsk_recognition_msgs/PolygonArray       
+             /right_detection_objects                          600 msgs    : itri_msgs/DetectedObjectArray           
+             /right_detection_points                           600 msgs    : sensor_msgs/PointCloud2                 
+             /right_lidar_objects                              600 msgs    : itri_msgs/DetectedObjectArray           
+             /right_lidar_objects_raw                          600 msgs    : itri_msgs/DetectedObjectArray           
+             /right_lidar_points                               600 msgs    : sensor_msgs/PointCloud2                 
+             /sent_dbw_messages                              14400 msgs    : can_msgs/Frame                          
+             /steering_2_report                               6000 msgs    : dbw_pacifica_msgs/Steering2Report       
+             /steering_cmd                                    2400 msgs    : dbw_pacifica_msgs/SteeringCmd           
+             /steering_report                                 6000 msgs    : dbw_pacifica_msgs/SteeringReport        
+             /surround_report                                  600 msgs    : dbw_pacifica_msgs/SurroundReport        
+             /tf                                             20669 msgs    : tf2_msgs/TFMessage                      
+             /tf_static                                          1 msg     : tf2_msgs/TFMessage                      
+             /tire_pressure_report                             120 msgs    : dbw_pacifica_msgs/TirePressureReport    
+             /top_cluster_hulls                                600 msgs    : jsk_recognition_msgs/PolygonArray       
+             /top_detection_objects                            600 msgs    : itri_msgs/DetectedObjectArray           
+             /top_detection_points                             600 msgs    : sensor_msgs/PointCloud2                 
+             /top_lidar_objects                                600 msgs    : itri_msgs/DetectedObjectArray           
+             /top_lidar_objects_raw                            600 msgs    : itri_msgs/DetectedObjectArray           
+             /top_lidar_points                                 600 msgs    : sensor_msgs/PointCloud2                 
+             /vehicle_state                                   6000 msgs    : itri_msgs/VehicleState                  
+             /velodyne/left_vlp16                              600 msgs    : sensor_msgs/PointCloud2                 
+             /velodyne/right_vlp16                             600 msgs    : sensor_msgs/PointCloud2                 
+             /wheel_position_report                            600 msgs    : dbw_pacifica_msgs/WheelPositionReport   
+             /wheel_speed_report                              3000 msgs    : dbw_pacifica_msgs/WheelSpeedReport
+```
+![alt text](<Screenshot from 2026-03-16 21-43-40.png>)![alt text](<Screenshot from 2026-03-16 21-43-57.png>)![alt text](<Screenshot from 2026-03-16 21-44-14.png>)
+
+## Task2
+
+![alt text](<Screenshot from 2026-03-16 22-36-06.png>)
+
+```python
+#!/usr/bin/env python3
+"""
+pc_profiler.py — 這是一個 ROS 節點，用來訂閱 PointCloud2 topic
+並印出每一幀的統計資訊 (包含：Topic 名稱、時間戳記、點雲數量、X/Y/Z 軸的最小-最大範圍)。
+"""
+
+import sys
+import numpy as np
+import rospy
+from sensor_msgs.msg import PointCloud2
+import sensor_msgs.point_cloud2 as pc2 
+
+class PCProfiler:
+    def __init__(self, topic):
+        self.topic = topic
+        rospy.init_node("pc_profiler", anonymous=True)
+        
+        rospy.Subscriber(topic, PointCloud2, self.callback)
+        rospy.loginfo("Subscribed to %s  --  waiting for data ...", topic)
+
+    def callback(self, msg):
+        """
+        當收到 PointCloud2 訊息時觸發此函式。
+        """
+        
+        # field_names=("x", "y", "z"): get position
+        points = np.array(
+            list(pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)),
+            dtype=np.float32,
+        )
+
+        stamp = msg.header.stamp.to_sec()
+        n_points = len(points)
+        if n_points == 0:
+            rospy.logwarn("[%s] Received empty point cloud at t=%.3f", self.topic, stamp)
+            return
+
+        
+        # get max and min of x, y, z
+        x_min, y_min, z_min = points.min(axis=0)
+        x_max, y_max, z_max = points.max(axis=0)
+
+        print("=" * 60)
+        print("Topic     : {}".format(self.topic))
+        print("Timestamp : {:.3f}".format(stamp))
+        print("Points    : {}".format(n_points))
+        
+        print("X range   : [{:.1f}, {:.1f}] m".format(x_min, x_max))
+        print("Y range   : [{:.1f}, {:.1f}] m".format(y_min, y_max))
+        print("Z range   : [{:.1f}, {:.1f}] m".format(z_min, z_max))
+        print("=" * 60)
+        print()
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python3 pc_profiler.py <topic_name>")
+        print("  e.g. python3 pc_profiler.py /ouster/top_122219002200")
+        sys.exit(1)
+
+    # get topic name
+    topic = sys.argv[1]
+    
+    # create profiler
+    profiler = PCProfiler(topic)
+    
+    # keep running
+    rospy.spin()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+## Task3
+
+![alt text](<Screenshot from 2026-03-19 00-48-18.png>)![alt text](<Screenshot from 2026-03-19 00-48-59.png>)
+
+## Task4
+
+https://youtu.be/l3GlJMnWkYs
+
+```python
+#!/usr/bin/env python3
+"""
+radar_relative_speed.py
+- 訂閱 /ars548/radar_front/objects (雷達已分群與追蹤的物件)
+- 使用量測到的相對速度與自車絕對速度比較，過濾靜止背景
+- 使用雷達硬體的 ID 來綁定 Marker，消除殘影
+"""
+
+import numpy as np
+import struct
+import rospy
+import math
+from sensor_msgs.msg import PointCloud2
+from visualization_msgs.msg import Marker, MarkerArray
+from geometry_msgs.msg import Vector3Stamped
+
+# Define topic name
+RADAR_TOPIC = "/ars548/radar_front/objects"
+MARKER_TOPIC = "/radar_relative_speed/markers"
+VELOCITY_TOPIC = "/filter/velocity"
+
+# ==========================================
+# Parameter setting
+# ==========================================
+# Tolerance for stationary objects (unit: m/s)
+# If |relative speed + ego speed| is less than this value, it will be treated as stationary background and filtered out.
+STATIONARY_TOLERANCE = 0.8  
+# ==========================================
+
+"""
+從 ROS 的 PointCloud2 訊息中解析出我們需要的特定欄位 (如 x, y, z, 速度, ID)。
+這是一個通用型的二進位解碼器，處理 C++ struct 轉 Python 陣列的過程。
+"""
+def read_points_with_fields(msg, field_names):
+    
+    # 定義資料型態對應表 (PointField datatype -> struct format)
+    DTYPE_MAP = {1: 'b', 2: 'B', 3: 'h', 4: 'H', 5: 'i', 6: 'I', 7: 'f', 8: 'd'}
+    field_info = {}
+    for f in msg.fields:
+        if f.name in field_names:
+            fmt = DTYPE_MAP.get(f.datatype)
+            if fmt: field_info[f.name] = (f.offset, fmt)
+
+    endian = '>' if msg.is_bigendian else '<'
+    data = msg.data
+    step = msg.point_step
+    n_points = msg.width * msg.height
+    
+    result = {name: np.empty(n_points, dtype=np.float64) for name in field_info}
+
+    for i in range(n_points):
+        base = i * step
+        for name, (offset, fmt) in field_info.items():
+            size = struct.calcsize(fmt)
+            val = struct.unpack(endian + fmt, data[base + offset: base + offset + size])[0]
+            result[name][i] = val
+    return result, n_points
+
+
+
+class RadarRelativeSpeed:
+    def __init__(self):
+        rospy.init_node("radar_relative_speed", anonymous=True)
+        
+        # 變數：用來隨時儲存自駕車最新的絕對速度
+        self.ego_speed = 0.0
+        
+        # 1. 訂閱底盤/濾波器算出來的自車速度
+        rospy.Subscriber(VELOCITY_TOPIC, Vector3Stamped, self.ego_speed_callback)
+        
+        # 2. 建立 Publisher，用來把標籤畫到 RViz 上
+        self.marker_pub = rospy.Publisher(MARKER_TOPIC, MarkerArray, queue_size=1)
+        
+        # 3. 訂閱雷達的物件資料
+        rospy.Subscriber(RADAR_TOPIC, PointCloud2, self.radar_callback)
+        
+        self.vrel_field = None 
+        # ARS548 物件 Topic 通常把 X 軸相對速度命名為 dynamicsrelvelx，這裡放多個候選名以防萬一
+        self.vrel_candidates = ["dynamicsrelvelx", "rangerate", "vrel_rad", "vrelrad", "v_rel_rad", "velocity", "doppler", "range_rate", "vr"]
+        
+        # 變數：記錄上一幀畫面上有哪些 ID，用來做「垃圾回收」(清除消失的物件)
+        self.active_object_ids = set()
+
+    def ego_speed_callback(self, msg):
+        """
+        calculate ego speed
+        """
+        self.ego_speed = math.hypot(msg.vector.x, msg.vector.y)
+
+    def _resolve_vrel_field(self, msg):
+        """
+        自動偵測雷達資料中「代表速度」的欄位名稱到底叫什麼。
+        """
+        available = [f.name.lower() for f in msg.fields]
+        for candidate in self.vrel_candidates:
+            if candidate in available:
+                for f in msg.fields:
+                    if f.name.lower() == candidate:
+                        self.vrel_field = f.name
+                        rospy.loginfo(f"成功找到速度欄位: {self.vrel_field}")
+                        return
+        self.vrel_field = "__NONE__"
+
+    def radar_callback(self, msg):
+        """
+        核心迴圈：每次收到一幀雷達資料時就會執行這裡。
+        """
+        # 如果還沒找到速度欄位名稱，先去找
+        if self.vrel_field is None:
+            self._resolve_vrel_field(msg)
+        if self.vrel_field == "__NONE__":
+            return
+
+        # 讀取我們關心的 5 個欄位：三維座標、相對速度、追蹤 ID
+        fields_to_read = ["x", "y", "z", self.vrel_field, "ID"]
+        data, n_points = read_points_with_fields(msg, fields_to_read)
+
+        if n_points == 0:
+            return
+
+        # 將讀取到的資料轉為 numpy 陣列，方便進行快速的矩陣運算
+        x = data.get("x", np.array([]))
+        y = data.get("y", np.array([]))
+        z = data.get("z", np.array([]))
+        vrel = data.get(self.vrel_field, np.array([]))
+        obj_ids = data.get("ID", np.array([]))
+
+        if len(x) == 0:
+            return
+
+        # =======================================================
+        # 核心過濾邏輯：自車運動補償 (Ego-Motion Compensation)
+        # =======================================================
+        # 1. 算出每個物件的「絕對速度」
+        # (因為雷達朝前，靜止物件的相對速度會剛好等於負的自車速度)
+        v_abs = vrel + self.ego_speed
+        
+        # 2. 建立遮罩 (Mask)：只保留絕對速度「大於容忍值」的物件
+        # 這樣就能完美把樹木、護欄、停在路邊的車都過濾掉
+        dynamic_mask = np.abs(v_abs) > STATIONARY_TOLERANCE
+        
+        # 3. 套用遮罩，把靜止的點全部丟棄
+        x = x[dynamic_mask]
+        y = y[dynamic_mask]
+        z = z[dynamic_mask]
+        vrel = vrel[dynamic_mask]
+        
+        # 安全機制：確保能抓到 ID
+        if len(obj_ids) > 0:
+            current_ids = obj_ids[dynamic_mask]
+        else:
+            current_ids = np.arange(len(x))
+
+        marker_array = MarkerArray()
+        stamp = msg.header.stamp
+        frame_id = msg.header.frame_id
+        
+        # 用來記錄這一幀「存活」下來的物件 ID
+        current_frame_ids = set()
+
+        # =======================================================
+        # 視覺化：為每個移動中的物件建立文字標籤
+        # =======================================================
+        for i in range(len(x)):
+            marker = Marker()
+            marker.header.stamp = stamp
+            marker.header.frame_id = frame_id
+            marker.ns = "radar_speed"
+            
+            # 關鍵：直接把雷達硬體的 ID 賦予 Marker
+            # 這樣只要這台車還在畫面上，RViz 就會直接更新它的位置，而不會產生殘影
+            obj_id = int(current_ids[i])
+            marker.id = obj_id
+            current_frame_ids.add(obj_id)
+            
+            marker.type = Marker.TEXT_VIEW_FACING
+            marker.action = Marker.ADD
+
+            # 設定標籤位置 (稍微浮在物件上方 1.5 公尺處)
+            marker.pose.position.x = float(x[i])
+            marker.pose.position.y = float(y[i])
+            marker.pose.position.z = float(z[i]) + 1.5  
+            marker.pose.orientation.w = 1.0
+            marker.scale.z = 1.0  # 文字大小
+
+            # 顏色設定：相對速度小於 0 (靠近我) 顯示綠色，大於 0 (遠離我) 顯示紅色
+            rel_speed = float(vrel[i])
+            if rel_speed < 0:
+                marker.color.r, marker.color.g, marker.color.b = 0.0, 1.0, 0.0
+            else:
+                marker.color.r, marker.color.g, marker.color.b = 1.0, 0.0, 0.0
+            marker.color.a = 1.0
+
+            # 標籤文字內容：顯示相對速度，取到小數點第一位
+            marker.text = "{:.1f} m/s".format(rel_speed)
+            
+            # 存活時間設為 0.5 秒，作為安全網
+            marker.lifetime = rospy.Duration(0.5) 
+            marker_array.markers.append(marker)
+
+        # =======================================================
+        # 垃圾回收：精準刪除已經消失的物件
+        # =======================================================
+        # 找出上一幀有，但這一幀不見的 ID (例如車子轉彎開走了)
+        missing_ids = self.active_object_ids - current_frame_ids
+        for missing_id in missing_ids:
+            del_marker = Marker()
+            del_marker.header.frame_id = frame_id
+            del_marker.ns = "radar_speed"
+            del_marker.id = missing_id
+            # 發送 DELETE 指令，讓 RViz 立刻把這個標籤從畫面上擦掉
+            del_marker.action = Marker.DELETE
+            marker_array.markers.append(del_marker)
+
+        # 把當前的 ID 清單記錄下來，留給下一幀比對用
+        self.active_object_ids = current_frame_ids
+        
+        # 把打包好的 Marker 陣列發布出去
+        if len(marker_array.markers) > 0:
+            self.marker_pub.publish(marker_array)
+
+def main():
+    node = RadarRelativeSpeed()
+    rospy.spin()
+
+if __name__ == "__main__":
+    main()
+```
+
+## Extra Task
+
+
+# 光達測距技術：相位偏移法 (Phase-Shift)
+
+相位偏移法（Phase-Shift）與常見的飛行時間法（ToF）不同，它通常不發射短促的脈衝，而是發射**連續波 (Continuous Wave, CW)** 雷射，並對其進行振幅調變 (Amplitude Modulation)。這種技術特別適合對精度要求極高的中短距離測量。
+
+## 詳細原理
+
+1. **發射連續波**：光達系統發射一個帶有特定調變頻率 ($f$) 的連續光波訊號。
+2. **接收與比對**：當光波擊中目標物體並反射回到接收器時，接收到的波形會與系統原始發射的波形產生一個**相位延遲**（也就是相位差，$\Delta \phi$）。
+3. **推算距離**：因為光速與調變頻率是已知的，系統只要計算出這兩個波的相位差，就能精確推算光波在空中往返的總距離。
+
+
+
+## 距離計算公式
+
+距離 ($d$) 的推導公式如下：
+
+$$d = \frac{c}{2f} \cdot \frac{\Delta \phi}{2\pi}$$
+
+* **$d$**：目標物體的距離
+* **$c$**：光速（約 $3 \times 10^8$ m/s）
+* **$f$**：雷射的振幅調變頻率
+* **$\Delta \phi$**：測量到的相位延遲（以弧度表示）

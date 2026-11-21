@@ -1,0 +1,8 @@
+numpy
+pandas
+matplotlib
+scipy
+pytest
+imageio[ffmpeg]
+pyyaml
+opencv-python-headless

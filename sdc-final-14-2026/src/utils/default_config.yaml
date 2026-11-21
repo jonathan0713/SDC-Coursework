@@ -1,0 +1,43 @@
+lifecycle:
+  max_age: 10        # frames without match before a track is deleted
+
+filter:
+  type: kalman         # "kalman" | "identity" (identity disables KF smoothing)
+  q_var: 100        # longitudinal (x/vx) process noise variance
+  q_var_lat: 10     # lateral (y/vy) process noise; smaller → prefer forward motion
+  r_var: 300        # measurement noise variance (position)
+  p_var: 100       # initial state covariance diagonal
+  dt: 0.1           # frame time step (10 Hz → 100 ms)
+  r_var_vel: 5.0    # measurement noise for radial-velocity observation
+
+gate:
+  max_distance: 4.0   # Mahalanobis soft-gate threshold
+  max_euclidean: 5.5  # Euclidean hard-gate cap (metres)
+  rr_vel_gate: 5.0      # |Δrr| threshold (m/s) for soft rr observation; 0 = disabled
+  rr_spawn_min_pts: 3   # min cluster pts to trust rr at spawn; fewer pts + |rr|>rr_vel_gate → zero vx/vy init
+
+cost:
+  range_rate_sigma: 10.0  # range-rate cost normalisation (m/s)
+  y_cost_weight: 0.5      # lateral (y) penalty per metre; 0 = disabled
+
+ego_lowpass:
+  cutoff: 0.1   # normalised cutoff freq in (0, 1) relative to Nyquist
+  order: 4      # Butterworth filter order
+
+camera_gate:
+  enabled: false            # 是否啟用相機輔助 age 凍結（雷達丟失時以 YOLO + SAM2 確認）
+  extrinsics: null          # extrinsics .npz 路徑；null = 自動尋找 data/outputs/<seq>_extrinsics.npz
+  # ── YOLO：一級確認（快速、class-aware）────────────────────────────────
+  yolo_model: weights/yolo11s.pt    # YOLO 模型名稱或路徑（首次使用會自動下載權重）
+  yolo_conf: 0.35           # 車輛偵測信心值閾值
+  yolo_classes: [2, 3, 5, 7]   # COCO 類別：car=2, motorcycle=3, bus=5, truck=7
+  proj_margin_px: 20        # 投影點 (u,v) 命中 box 邊界的容忍像素數
+  # ── SAM2：二級 fallback（遠距離小物件 YOLO 失效時啟用）──────────────
+  sam2_ckpt: null           # SAM2 checkpoint 路徑；null = 自動尋找 data/sam2_checkpoints/
+  sam2_cfg: sam2_hiera_t    # SAM2 config 名稱
+  sam2_score_threshold: 0.70   # 分割信心值閾值（低於此值視為背景）
+  sam2_mask_min_px: 50      # mask 面積下限（像素），過濾噪點
+  sam2_mask_max_px: 100000  # mask 面積上限（像素），過濾背景大區域
+  proj_z_height: -0.536     # 投影時固定的 z 高度（m）；取代雷達雜訊 z，用 tune_proj_z.py 調整
+  cam_rescue_gate_px: 50    # 04-② 補救閘門：cluster 投影點到 mask 邊界的最大像素距離
+  cam_mask_drift_px: 80     # drift guard：KF 投影點到 mask 邊界的最大容忍像素；超出則移除 mask

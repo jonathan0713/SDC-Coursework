@@ -1,0 +1,14 @@
+[project]
+name = "slam-project"
+version = "0.1.0"
+requires-python = ">=3.9,<3.10"
+dependencies = [
+    "numpy<2",
+    "pandas",
+    "scipy",
+    "tqdm",
+    "opencv-python",
+    "open3d",
+    "gtsam",
+    "small_gicp"
+]

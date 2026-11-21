@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Competition 2 室友解法分析</title>
+  <link rel="stylesheet" href="./doc.css">
+  <style>
+    .tag {
+      display: inline-block;
+      padding: 0.15em 0.55em;
+      border-radius: 6px;
+      font-family: var(--font-sans);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .tag-green  { background: #d4edda; color: #1a5c2a; }
+    .tag-amber  { background: #fff3cd; color: #7a5800; }
+    .tag-red    { background: #f8d7da; color: #842029; }
+    .tag-blue   { background: #cfe2ff; color: #084298; }
+    .pipeline-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-family: var(--font-sans);
+      font-size: 0.95rem;
+      margin: 10px 0;
+    }
+    .pipeline-box {
+      padding: 10px 18px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      white-space: nowrap;
+    }
+    .pipeline-arrow {
+      color: var(--faint);
+      font-size: 1.2rem;
+    }
+    .diff-table td:first-child {
+      font-family: var(--font-mono);
+      font-size: 0.85em;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+<main class="doc-shell">
+
+  <div class="eyebrow">Code Analysis — Competition 2</div>
+  <h1>室友解法分析</h1>
+  <p class="lead">
+    本文分析 <code>cite/competition_2_moving_ego_mot_student/</code> 中的追蹤器實作。
+    該解法以純距離匹配 + 速度外插取代 Kalman Filter，在 seq_4 的 moving-ego 情境下一次通過 baseline。
+  </p>
+
+  <hr>
+
+  <!-- ── 整體架構 ────────────────────────────────────────────────── -->
+  <h2>整體架構</h2>
+  <p>
+    程式碼共三個核心檔案，分工明確：
+  </p>
+  <table>
+    <thead>
+      <tr><th>檔案</th><th>職責</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>main.py</code></td>
+        <td>讀取資料、計算群集中心、呼叫 tracker、輸出 result.csv</td>
+      </tr>
+      <tr>
+        <td><code>sdc_tracker.py</code></td>
+        <td>Track 資料結構、關聯演算法、track 生命週期</td>
+      </tr>
+      <tr>
+        <td><code>sdc_tracking_utils.py</code></td>
+        <td>CSV 讀寫、Mask 解析（繼承 starter code 不動）</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>整體 pipeline 如下：</p>
+  <div style="overflow-x:auto; padding: 8px 0;">
+    <div class="pipeline-row">
+      <div class="pipeline-box">Radar 點雲 + Cluster Mask</div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-box">群集中心提取<br><small style="color:var(--muted)">[x,y,z, rr]</small></div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-box">Track 預測<br><small style="color:var(--muted)">pos += vel·age</small></div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-box">Hungary 指派<br><small style="color:var(--muted)">xy+z+rr 距離</small></div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-box">Track 更新<br><small style="color:var(--muted)">確認 / 老化</small></div>
+      <div class="pipeline-arrow">→</div>
+      <div class="pipeline-box">result.csv</div>
+    </div>
+  </div>
+
+  <!-- ── 偵測提取 ──────────────────────────────────────────────── -->
+  <h2>偵測提取（Detection Extraction）</h2>
+  <p>
+    <code>calculate_cluster_centroids()</code> 對每個移動群集計算：
+  </p>
+  <ul>
+    <li>空間中心：所有點的 <strong>平均 [x, y, z]</strong></li>
+    <li>速度特徵：所有點的 <strong>平均 range_rate (ṙ)</strong></li>
+  </ul>
+  <p>
+    <code>build_detections()</code> 將結果組成形狀 <code>(N, 5)</code> 的陣列，格式為
+    <code>[x, y, z, cluster_id, range_rate]</code>，直接傳入 tracker。
+  </p>
+
+  <!-- ── Track 預測 ──────────────────────────────────────────────── -->
+  <h2>Track 預測（Motion Model）</h2>
+  <p>
+    本解法<strong>不使用 Kalman Filter</strong>，改以直接的速度外插（velocity extrapolation）：
+  </p>
+  <pre><code># 每次配對前，對未配對的 track 進行位置外插
+track["mean"] += track["velocity"] * max(track["age"], 1)
+
+# 配對後，以當前偵測更新位置與速度
+track["velocity"] = current_mean - previous_mean  # Δpos / 1 frame</code></pre>
+
+  <p>
+    速度 = 前後幀的位置差，等同於假設每個物體做<strong>常速直線運動（CV）且取樣間隔為 1 幀</strong>。
+    對 age &gt; 1 的未配對 track，速度會被乘以累積幀數，相當於線性外插至該幀的預期位置。
+  </p>
+
+  <div class="callout">
+    <strong>缺點：</strong>速度估計沒有雜訊濾波，若單幀偵測位置跳動較大，速度估計就會不穩定。
+    Kalman Filter 在這個環節提供了平滑效果（process noise vs. measurement noise 的 trade-off），
+    但對 seq_4 的相對直行車流而言，單幀的位置誤差不大，粗略外插已足夠。
+  </div>
+
+  <!-- ── 關聯策略 ──────────────────────────────────────────────── -->
+  <h2>資料關聯策略（Data Association）</h2>
+
+  <h3>代價函數</h3>
+  <p>每對 (track <i>i</i>, detection <i>j</i>) 的代價為：</p>
+  <pre><code>xy_dist  = || pos_i[:2] - det_j[:2] ||   # XY 平面歐氏距離
+z_dist   = | pos_i[2]  - det_j[2]  |    # 高度差（絕對值）
+rr_dist  = | rr_i      - rr_j      |    # Range rate 差
+
+cost = xy_dist + 0.1 * z_dist + 0.05 * rr_dist</code></pre>
+
+  <p>
+    三個特徵的權重差距懸殊：<code>z_dist</code> 只佔 10%，<code>rr_dist</code> 只佔 5%，
+    代價矩陣在實務上幾乎等同於<strong>純 XY 平面距離</strong>。
+    z 和 range_rate 僅在距離相近時起到微弱的決勝作用。
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>特徵</th><th>權重</th><th>物理意義</th><th>實際影響</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>xy_dist</code></td>
+        <td>1.0</td>
+        <td>水平面位置差</td>
+        <td><span class="tag tag-red">主導</span></td>
+      </tr>
+      <tr>
+        <td><code>z_dist</code></td>
+        <td>0.1</td>
+        <td>雷達高度差（同車輛類型差異小）</td>
+        <td><span class="tag tag-amber">微弱</span></td>
+      </tr>
+      <tr>
+        <td><code>rr_dist</code></td>
+        <td>0.05</td>
+        <td>Doppler 速度差（1 m/s 量化）</td>
+        <td><span class="tag tag-green">極微弱</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>閘門（Gating）</h3>
+  <p>
+    只使用<strong>硬性歐氏距離閘門</strong>：若 <code>xy_dist > max_distance (5.0 m)</code>
+    則直接跳過，不填入代價矩陣。閘門設計非常寬鬆，不使用 Mahalanobis 距離。
+  </p>
+
+  <h3>指派演算法</h3>
+  <p>
+    使用 <code>scipy.optimize.linear_sum_assignment</code>（Hungarian algorithm）進行全域最優指派。
+    指派完成後，再過濾掉代價超過閾值的配對。
+  </p>
+
+  <!-- ── Track 生命週期 ──────────────────────────────────────────── -->
+  <h2>Track 生命週期（Track Lifecycle）</h2>
+
+  <table>
+    <thead>
+      <tr><th>參數</th><th>值</th><th>說明</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>max_age</code></td>
+        <td>5</td>
+        <td>未配對超過 5 幀後刪除 track</td>
+      </tr>
+      <tr>
+        <td><code>min_hits</code></td>
+        <td>1</td>
+        <td>命中 1 次即為 confirmed，等同於沒有 tentative 階段</td>
+      </tr>
+      <tr>
+        <td><code>max_distance</code></td>
+        <td>5.0 m</td>
+        <td>XY 閘門半徑</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    <code>min_hits=1</code> 是關鍵設計：新出現的物體在第一幀就被確認並輸出 track_id，
+    無需等待暖機期。對 seq_4 這種目標始終可見、遮擋少的場景，這降低了早期 FN（false negative）。
+  </p>
+
+  <div class="callout">
+    <strong>輸出過濾邏輯：</strong>只輸出「已確認 <em>且</em> 本幀有配對到偵測」的 track。
+    未配對但仍存活的 track（在 max_age 內）<em>不會</em>出現在本幀的 cluster_track_dict 中。
+    這使輸出更保守，減少幽靈 track 造成的 FP。
+  </div>
+
+  <!-- ── Ego 運動處理 ──────────────────────────────────────────── -->
+  <h2>Ego 運動處理</h2>
+  <p>
+    Competition 2 明確提供 <code>ego_global_pos.txt</code>，題目說明中也建議設計 ego-motion compensation。
+    該解法在 <code>main.py</code> 中確實載入了 ego 位置：
+  </p>
+  <pre><code>ego_pos_list = ego_pos_distance(seq_dir / "ego_global_pos.txt")</code></pre>
+  <p>
+    然而在關聯步驟中，ego 資訊<strong>完全未被使用</strong>：
+  </p>
+  <pre><code># Association does NOT use ego pose — all detections are in radar (ego) frame
+confirmed_tracks = tracker.update(detections)</code></pre>
+
+  <p>
+    這意味著 KF 的 predict 步驟沒有考慮 ego 移動，追蹤完全在 radar（ego）座標系下進行。
+    能夠通過 baseline 的原因可能是：
+  </p>
+  <ul>
+    <li>seq_4 幾乎全程直行，ego 速度方向穩定，座標系偏移相對可預測</li>
+    <li>5.0 m 的寬鬆閘門足以容納單幀內 ego 移動造成的位置偏差</li>
+    <li>速度外插 <code>pos += vel·age</code> 在直行場景下能部分補償 ego 移動（因為前景車輛的偵測位置變化包含了 ego 速度分量）</li>
+  </ul>
+
+  <div class="callout">
+    <strong>風險：</strong>若 ego 有明顯轉彎或加速，radar frame 下的物體座標會快速偏移，
+    5.0 m 閘門可能不足以吸收，導致 track 斷裂（IDSW 上升）。
+  </div>
+
+  <!-- ── 評估指標 ──────────────────────────────────────────────── -->
+  <h2>評估指標（MOTA Proxy）</h2>
+  <p>
+    評估函數 <code>evaluate_tracking.py</code> 實作了 MOTA（Multi-Object Tracking Accuracy）的近似版：
+  </p>
+  <pre><code>MOTA_proxy = 1 - (FP_points + FN_points + IDSW_proxy) / GT_positive_points</code></pre>
+
+  <p>MOTA 的三個懲罰項目含義如下：</p>
+  <table>
+    <thead>
+      <tr><th>指標</th><th>說明</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>FP_points</strong></td>
+        <td>GT 為 static/unknown，但 pred 給出 track_id 的點數</td>
+      </tr>
+      <tr>
+        <td><strong>FN_points</strong></td>
+        <td>GT 為 moving（有 track_id），但 pred 無輸出的點數</td>
+      </tr>
+      <tr>
+        <td><strong>IDSW_proxy</strong></td>
+        <td>同一 GT track 在前後幀被指派到不同 pred track_id（身份切換）</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    評估單位是<strong>雷達點</strong>而非物體框（bounding box），因此群集較大的物體對分數影響也較大。
+  </p>
+
+  <!-- ── 與我們解法的比較 ──────────────────────────────────────── -->
+  <h2>與我們解法的比較</h2>
+  <table class="diff-table">
+    <thead>
+      <tr><th>面向</th><th>室友解法</th><th>我們的解法</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>運動模型</td>
+        <td>Δpos 速度外插（無濾波）</td>
+        <td>Kalman Filter（CV 模型）+ ṙ 增廣觀測</td>
+      </tr>
+      <tr>
+        <td>速度初始化</td>
+        <td>0（無初始化）</td>
+        <td>ṙ · r̂（range rate 徑向投影）</td>
+      </tr>
+      <tr>
+        <td>閘門</td>
+        <td>硬性歐氏距離 5.0 m</td>
+        <td>歐氏 + Mahalanobis 雙層</td>
+      </tr>
+      <tr>
+        <td>代價函數</td>
+        <td>xy + 0.1·z + 0.05·rr</td>
+        <td>Mahalanobis + rr 正規化項</td>
+      </tr>
+      <tr>
+        <td>Track 確認</td>
+        <td>min_hits=1（立即確認）</td>
+        <td>min_hits 已移除（立即確認）</td>
+      </tr>
+      <tr>
+        <td>Ego 補償</td>
+        <td>不使用（ego frame 追蹤）</td>
+        <td>不使用（ego frame，與室友相同）</td>
+      </tr>
+      <tr>
+        <td>Range rate 在 KF</td>
+        <td>不使用 KF</td>
+        <td>增廣觀測 [x,y,ṙ]（H' EKF 線性化）</td>
+      </tr>
+      <tr>
+        <td>輸出過濾</td>
+        <td>confirmed + 本幀有配對</td>
+        <td>active（本幀配對者有顏色區分）</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ── 為何能通過 baseline ──────────────────────────────────── -->
+  <h2>為何能通過 Baseline</h2>
+  <p>
+    seq_4 的場景特性讓簡單解法得以成立：
+  </p>
+  <ul>
+    <li><strong>直行主導：</strong>ego 和周遭車輛都近似直行，無複雜機動，速度外插的誤差較小</li>
+    <li><strong>目標稀疏：</strong>同向車流目標數量有限，Hungarian 指派的歧義性低</li>
+    <li><strong>群集穩定：</strong>4D 雷達群集在連續幀之間位置跳動不大（無 ego 補償的誤差在閾值內）</li>
+    <li><strong>寬鬆閘門：</strong>5.0 m 覆蓋了 ego 移動和量測雜訊的綜合偏差</li>
+    <li><strong>立即確認：</strong>min_hits=1 減少早期 FN，在 seq_4 的簡單場景下 FP 不多</li>
+  </ul>
+
+  <div class="callout">
+    <strong>核心洞察：</strong>在特定場景下，<em>選對閘門閾值與代價函數的量級</em>
+    比使用複雜運動模型更重要。室友解法的 5.0 m 閘門和 min_hits=1 是最關鍵的兩個參數選擇。
+    Kalman Filter 的優勢在於對機動目標和 ego 轉彎的處理——在 seq_4 這種單純場景下，
+    優勢並不顯著。
+  </div>
+
+  <hr>
+  <p style="font-family: var(--font-sans); font-size: 0.85rem; color: var(--faint);">
+    分析日期：2026-06-06 ·
+    參考檔案：<code>cite/competition_2_moving_ego_mot_student/starter_code/</code>
+  </p>
+
+</main>
+</body>
+</html>
